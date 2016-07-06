@@ -2,10 +2,12 @@
  * Created by kaloyan on 6.7.2016 г..
  */
 const tls = require('tls');
+const fs = require('fs');
 
-const server = tls.Server();
-
-server.on('secureConnection', function(peerSocket){
+const server = tls.Server({
+    key: fs.readFileSync("certs/server-key.pem"),
+    cert: fs.readFileSync("certs/server-cert.pem")
+}, function(peerSocket){
 
 });
 

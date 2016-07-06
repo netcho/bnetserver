@@ -1,0 +1,11 @@
+{
+  "name": "battlenet",
+  "version": "0.0.1",
+  "description": "A battle.net implementation written",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "protobufjs": "^5.0.1"
+  }
+}
