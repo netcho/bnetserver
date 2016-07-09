@@ -9,13 +9,14 @@ const crypto = require('crypto');
 const ProtoBuf = require('protobufjs');
 //const Session = require('./session.js');
 const ConnectionService = require('./services/connection.js');
+const AuthenticationService = require('./services/authentication.js');
 
 var builder = ProtoBuf.newBuilder();
 //ProtoBuf.loadProtoFile("proto/bnet/account_service.proto", builder);
-//ProtoBuf.loadProtoFile("proto/bnet/authentication_service.proto", builder);
-//ProtoBuf.loadProtoFile("proto/bnet/challenge_service.proto", builder);
-ProtoBuf.loadProtoFile("proto/bnet/rcp_types.proto", builder);
+ProtoBuf.loadProtoFile("proto/bnet/authentication_service.proto", builder);
+ProtoBuf.loadProtoFile("proto/bnet/challenge_service.proto", builder);
 ProtoBuf.loadProtoFile("proto/bnet/connection_service.proto", builder);
+ProtoBuf.loadProtoFile("proto/bnet/rcp_types.proto", builder);
 
 global.builder = builder.resolveAll();
 global.listenAddress = "192.168.1.4";
@@ -25,9 +26,14 @@ const server = tls.Server({
     key: fs.readFileSync("certs/server-key.pem"),
     cert: fs.readFileSync("certs/server-cert.pem")
 }, function(socket){
+    socket.requestToken = 0;
     socket.services = {};
+    socket.responseCallbacks = {};
+
     const connectionService = new ConnectionService(socket);
     socket.services[connectionService.getServiceHash()] = connectionService;
+    const authenticationService = new AuthenticationService(socket);
+    socket.services[authenticationService.getServiceHash()] = authenticationService;
     
     socket.on('data', function (data) {
         var bytesRead = socket.bytesRead;
@@ -38,10 +44,20 @@ const server = tls.Server({
 
             if (bytesRead >= headerSize){
                 const header = builder.build("bgs.protocol.Header").decode(data.slice(2, 2+headerSize));
-                //console.log(header);
+
+                if (socket.services[header.service_hash] == undefined){
+                    console.log("Received unregistered service");
+                    console.log(header);
+                    return;
+                }
 
                 if (header.service_id != 0xFE){
-                    socket.services[header.service_hash].handleData(header.method_id, data.slice(2+headerSize),header.token);
+                    socket.services[header.service_hash].handleData(header, data.slice(2+headerSize));
+                }else{
+                    const response = socket.responseCallbacks[header.token];
+
+                    if (response.callback != null)
+                        response.callback(global.builder.build(response.responseName).decode(data.slice(2+headerSize)));
                 }
             }
         }
