@@ -10,7 +10,7 @@ module.exports = class ConnectionService extends Service{
         
         this.serviceHash = 0x65446991;
         
-        this.registerHandler("Connect", function(request, response){
+        this.registerHandler("Connect", function(request, response, token, send){
 
             response.client_id = request.client_id;
             response.server_id.label = process.pid;
@@ -21,14 +21,14 @@ module.exports = class ConnectionService extends Service{
             /*this.timeout = setTimeout(function(){
 
             }, 15*1000);*/
-            
-            return 0; //to be replaced with enum
+
+            send(token, response);
         });
 
-        this.registerHandler("KeepAlive", function (request, response) {
+        this.registerHandler("KeepAlive", function (request, response, token, send) {
             //this.timeout.clearTimeout();
 
-            return 0;
+            send(token, response);
         });
     }
 };

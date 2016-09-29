@@ -1,12 +1,21 @@
 {
   "name": "battlenet",
   "version": "0.0.1",
-  "description": "A battle.net implementation written",
+  "description": "A battle.net implementation",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
+    "adler32-umd": "git://github.com/hajimes/adler32-umd.git",
+    "bcrypt": "^0.8.7",
+    "body-parser": "^1.15.2",
+    "express": "^4.14.0",
+    "long": "^3.2.0",
+    "mongoose": "^4.5.4",
+    "mongoose-long": "^0.1.0",
     "protobufjs": "^5.0.1",
-    "querystring": "^0.2.0"
+    "pug": "^2.0.0-beta6",
+    "querystring": "^0.2.0",
+    "redis": "^2.6.2"
   }
 }
