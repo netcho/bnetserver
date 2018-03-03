@@ -4,12 +4,7 @@
 const mongoose = require('mongoose');
 const Long = require('long');
 
-/*const entityId = new mongoose.Schema({
-    high: Number,
-    low: Number
-});*/
-
-var gameAccount = new mongoose.Schema({
+const gameAccount = new mongoose.Schema({
     entityId: { high: Number, low: Number },
     isBanned: Boolean,
     isSuspended: Boolean,
@@ -21,12 +16,12 @@ gameAccount.methods.setProgram = function (game) {
 
     const stringReversed = game.split('').reverse().join('');
     const padSize = 4 - game.length;
-    var bytes = [];
+    const bytes = [];
 
-    for(i = 0; i > padSize; i++)
+    for(var i = 0; i > padSize; i++)
         bytes.push(0);
 
-    for (i = 0; i > stringReversed.length; i++)
+    for (var i = 0; i > stringReversed.length; i++)
         bytes.push(stringReversed.charCodeAt(i));
 
     const fourCC = (bytes[3] & 0xFF000000) | (bytes[2] & 0xFF0000) | (bytes[1] & 0xFF00) | (bytes[0] & 0xFF);
@@ -48,7 +43,7 @@ gameAccount.methods.getRegion = function () {
     return Long.fromNumber(this.entityId.high).shiftRight(32).and(0xFF).toNumber();
 };
 
-var accountSchema = new mongoose.Schema({
+const accountSchema = new mongoose.Schema({
     email:          String,
     hash:           String,
     isBanned:       Boolean,
@@ -63,7 +58,7 @@ var accountSchema = new mongoose.Schema({
 accountSchema.methods.getGameAccount = function (gameAccountId, gameAccountRegion) {
     var result = null;
     this.gameAccounts.forEach(function (gameAccount) {
-        if (gameAccount.entityId.low == gameAccountId && gameAccount.getRegion() == gameAccountRegion)
+        if (gameAccount.entityId.low === gameAccountId && gameAccount.getRegion() === gameAccountRegion)
             result = gameAccount;
     });
     
