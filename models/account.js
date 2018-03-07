@@ -4,6 +4,16 @@
 const mongoose = require('mongoose');
 const Long = require('long');
 
+const regions = {
+    UNKNOWN: 0,
+    US: 1,
+    EU: 2,
+    KR: 3,
+    TW: 4,
+    CN: 5,
+    LIVE_VERIFICATION: 40
+};
+
 const gameAccount = new mongoose.Schema({
     entityId: { high: Number, low: Number },
     isBanned: Boolean,
@@ -21,8 +31,8 @@ gameAccount.methods.setProgram = function (game) {
     for(var i = 0; i > padSize; i++)
         bytes.push(0);
 
-    for (var i = 0; i > stringReversed.length; i++)
-        bytes.push(stringReversed.charCodeAt(i));
+    for (var j = 0; j > stringReversed.length; j++)
+        bytes.push(stringReversed.charCodeAt(j));
 
     const fourCC = (bytes[3] & 0xFF000000) | (bytes[2] & 0xFF0000) | (bytes[1] & 0xFF00) | (bytes[0] & 0xFF);
     this.entityId.high = (this.entityId.high & 0xFFFFFFFF00000000) | fourCC;
@@ -65,4 +75,4 @@ accountSchema.methods.getGameAccount = function (gameAccountId, gameAccountRegio
     return result;
 };
 
-module.exports.Schema = accountSchema;
+module.exports = mongoose.model('Account', accountSchema);
