@@ -6,70 +6,79 @@
 const FNV = require('fnv').FNV;
 const protobuf = require('protobufjs');
 
-protobuf.load('proto/bnet/rcp_types.proto');
-const Header = protobuf.lookupType('bgs.protocol.Header');
+const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
 
 module.exports = class Service{
-    constructor(file) {
+    constructor(name, file) {
         this.hash = 0;
-        this.name = undefined;
+        this.name = name;
+        this.clientQueueName = undefined;
         this.methods = [];
         this.handlers = [];
+        this.rootNamespace = protobuf.loadSync(file);
 
-        protobuf.load(file, (err, root) => {
-            if (err)
-                throw err;
+        let service = this.rootNamespace.lookupService(this.name);
 
-            for (let object in root.nestedArray){
-                if (object.name.includes('Service')){
-                    this.name = object.name;
-                    let hash = new FNV();
-                    hash.update(object.getOption('original_fully_qualified_descriptor_name'));
-                    this.hash = parseInt(hash.digest('hex'), 16);
+        this.methods = service.methodsArray;
 
-                    let service = new protobuf.Service(object.name);
-                    this.methods = service.methodsArray;
-                }
+        let hash = new FNV();
+        hash.update(service.getOption('(original_fully_qualified_descriptor_name)'));
+        this.hash = parseInt(hash.digest('hex'), 16);
+    }
+
+    getServiceHash() {
+        return this.hash;
+    }
+
+    getServiceName() {
+        return this.name;
+    }
+
+    setClientQueueName(name) {
+        this.clientQueueName = name;
+    }
+
+    registerHandler(name, handler) {
+        this.methods.forEach((method) => {
+            if (method.hasOwnProperty('name') && method.name === name) {
+                this.handlers[method.getOption('(method_id)')] = handler;
             }
         });
     }
 
-    hash() {
-        return this.hash;
-    }
-
-    registerHandler(name, handler) {
-        for (let method in this.methods) {
-            if (method.hasOwnProperty('name') && method.name === name) {
-                this.handlers[method.getOption('method_id')] = handler;
-            }
-        }
-    }
-
     handleCall(requestHeader, payload) {
-        if (this.handlers[requestHeader.method_id] !== undefined) {
+        if (this.handlers[requestHeader.methodId] !== undefined) {
             let method = this.methods.find((element) => {
-                return element.getOption('method_id') === requestHeader.method_id;
+                return element.getOption('(method_id)') === requestHeader.methodId;
             });
 
-            let response = protobuf.lookup(method.responseType).create();
-            let status = this.handlers[requestHeader.method_id](protobuf.lookup(method.requestType).decode(payload),
-                                                                response);
+            let responseType = this.rootNamespace.lookupType(method.responseType);
+            let requestType = this.rootNamespace.lookupType(method.requestType);
+
+            let context = {
+                response: responseType.create(),
+                request: requestType.decode(payload),
+                clientQueueName: this.clientQueueName
+            };
+
+            let status = this.handlers[requestHeader.methodId](context);
+            let responseBuffer = responseType.encode(context.response).finish();
 
             if(method.responseType !== '.bgs.protocol.NO_RESPONSE') {
-                let responseHeader = new Header();
-                requestHeader.service_id = 0xFE;
+                let responseHeader = Header.create();
+                requestHeader.serviceId = 0xFE;
                 responseHeader.token = requestHeader.token;
-                responseHeader.method_id = requestHeader.method_id;
-                responseHeader.service_hash = requestHeader.service_hash;
+                responseHeader.methodId = requestHeader.methodId;
+                responseHeader.serviceHash = requestHeader.serviceHash;
                 responseHeader.status = status;
-                responseHeader.size = response.encode().length;
-                let headerSize = responseHeader.encode().length;
+                responseHeader.size = responseBuffer.length;
 
-                let buffer = Buffer.alloc(2+headerSize+responseHeader.size);
-                buffer.writeUInt16BE(headerSize, 0);
-                responseHeader.encode().copy(buffer, 2);
-                response.encode().copy(buffer,2+headerSize);
+                let headerBuffer = Header.encode(responseHeader).finish();
+
+                let buffer = Buffer.alloc(2 + headerBuffer.length + responseBuffer.length);
+                buffer.writeUInt16BE(headerBuffer.length, 0);
+                headerBuffer.copy(buffer, 2);
+                responseBuffer.copy(buffer,2+headerBuffer.length);
 
                 return buffer;
             }
