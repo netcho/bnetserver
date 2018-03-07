@@ -7,23 +7,24 @@ const tls = require('tls');
 const https = require('https');
 const fs = require('fs');
 const crypto = require('crypto');
+const bcrypt = require('bcrypt');
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
-const redis = require('promise-redis')();
+const etcd = require('etcd3').Etcd3;
 const amqplib = require('amqplib');
 const winston = require('winston');
 
 const ServiceReceiver = require('./messaging/receiver');
 const AuthenticationService = require('./services/authentication');
 
-const accountSchema = require('./models/account.js').Schema;
+const Account = require('./models/account.js');
 
 mongoose.Promise = global.Promise;
 winston.emitErrs = true;
 
-global.redisConnection = redis.createClient({host: process.env.REDIS_HOST, port: process.env.REDIS_PORT});
-global.connection = mongoose.createConnection("mongodb://localhost/battlenet");
+global.etcd = new etcd().namespace('battlenet/');
+global.connection = mongoose.createConnection(process.env.MONGO_URL);
 global.logger = new winston.Logger({
     transports: [
         new winston.transports.File({
@@ -45,8 +46,11 @@ global.logger = new winston.Logger({
     exitOnError: false
 });
 
-amqplib.connect('amqp://localhost').then((conn) => {
+amqplib.connect(process.env.RABBIT_URL).then((conn) => {
     global.amqpConnection = conn;
+    new ServiceReceiver(new AuthenticationService());
+}, (err) => {
+    global.logger.error(err);
 });
 
 const Connection = require('./connection.js');
@@ -55,16 +59,15 @@ const server = tls.Server({
     key: fs.readFileSync('certs/server-key.pem'),
     cert: fs.readFileSync('certs/server-cert.pem')
 }, (socket) => {
-    global.logger.info('Received a new connection from:' + socket.remoteAddress);
+    global.logger.info('Received a new connection from: ' + socket.remoteAddress);
     new Connection(socket);
-    new ServiceReceiver(new AuthenticationService());
 });
 
 const rest = express();
 
 rest.use(bodyParser.json());
 
-rest.get('/bnet/login/', function(req, res){
+rest.get('/bnet/login/', (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json({
         "type": 1,
@@ -86,7 +89,7 @@ rest.get('/bnet/login/', function(req, res){
     });
 });
 
-rest.post('/bnet/login/', function (req, res) {
+rest.post('/bnet/login/', (req, res) => {
     var username = null;
     var password = null;
 
@@ -103,23 +106,21 @@ rest.post('/bnet/login/', function (req, res) {
 
     loginResult.authentication_state = "DONE";
 
-    const accountModel = global.connection.model('Account', accountSchema);
-    accountModel.findOne({email: username}, function (err, account) {
+    Account.findOne({email: username}, function (err, account) {
         if (err){
             loginResult.authentication_state = "LOGIN";
-            console.log("Account "+username+" not found");
+            global.logger.error("Account "+username+" not found");
         }
 
         if (account){
             if(bcrypt.compareSync(password, account.hash)) {
                 const loginTicket = "TC-"+crypto.randomBytes(20).toString('hex');
                 loginResult.login_ticket = loginTicket;
-                global.loginTickets[loginTicket] = account;
+                global.etcd.put('login_tickets/'+loginTicket).value(account.id);
             }else{
-                console.log("Failed logging attempt for account: "+username);
+                global.logger.error("Failed logging attempt for account: "+username);
             }
         }
-
         res.json(loginResult);
     });
 });
@@ -129,11 +130,10 @@ const restServer = https.createServer({
     cert: fs.readFileSync("certs/server-cert.pem")
 }, rest);
 
-server.listen(1119, global.listenAddress, function (){
-    global.amqpConnection.assertExchange('battlenet_aurora_bus', 'direct');
-    global.logger.log('Listening on port 1119');
+server.listen(1119, '172.16.1.103', () => {
+    global.logger.info('Listening on port 1119');
 });
 
-restServer.listen(443, function () {
-    global.logger.log('REST Service listening');
+restServer.listen(443, () => {
+    global.logger.info('REST Service listening');
 });
