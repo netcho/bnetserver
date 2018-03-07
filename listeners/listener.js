@@ -3,79 +3,52 @@
  */
 'use strict';
 
-/*module.exports = function(name, hash, socket){
-    const fullName = 'bgs.protocol.'+name+'.v1.'+name.charAt(0).toUpperCase() + name.slice(1)+'Listener';
-    const serviceType = global.builder.build(fullName);
-    const listener = new serviceType(function(methodName, request, callback = null){
-        socket.responseCallbacks[socket.requestToken] = {};
-        socket.responseCallbacks[socket.requestToken].callback = callback;
-        const Header = global.builder.build("bgs.protocol.Header");
-        const requestHeader = new Header();
-        requestHeader.service_id = 0;
-        requestHeader.service_hash = hash;
-        requestHeader.token = socket.requestToken;
-
-        const servicePrototype = global.builder.lookup(fullName);
-        for (var i = 0, len = servicePrototype.children.length; i < len; i++) {
-            const method = servicePrototype.children[i];
-            if(("."+fullName+"."+method.name) === methodName){
-                requestHeader.method_id = method.options['(method_id)'];
-
-                if (method.responseName.charAt(0) === ".")
-                    socket.responseCallbacks[socket.requestToken].responseName = method.responseName.substring(1);
-            }
-        }
-
-        const requestBuffer = request.encodeNB();
-        requestHeader.size = requestBuffer.length;
-
-        const headerBuffer = requestHeader.encodeNB();
-
-        const buffer = new Buffer(2+headerBuffer.length+requestBuffer.length);
-        buffer.writeUInt16BE(headerBuffer.length, 0);
-        headerBuffer.copy(buffer,2);
-        requestBuffer.copy(buffer, 2 + headerBuffer.length);
-
-        socket.write(buffer);
-        socket.requestToken++;
-    });
-
-    return listener;
-};*/
-
 const FNV = require('fnv').FNV;
 const protobuf = require('protobufjs');
+const uuid = require('uuid/v4');
 
-protobuf.load('proto/bnet/rcp_types.proto');
-const Header = protobuf.lookupType('bgs.protocol.Header');
+const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
 
-module.exports = class Listener{
-    constructor(file) {
+module.exports = class Listener {
+    constructor(name, file) {
         this.hash = 0;
-        this.name = undefined;
+        this.name = name;
         this.methods = [];
-        this.callbacks = [];
+        this.callbacks = {};
         this.clientQueueName = undefined;
+        this.amqpChannel = undefined;
 
         protobuf.load(file, (err, root) => {
             if (err)
                 throw err;
 
-            for (let object in root.nestedArray){
-                if (object.name.includes('Listener')){
-                    this.name = object.name;
-                    let hash = new FNV();
-                    hash.update(object.getOption('original_fully_qualified_descriptor_name'));
-                    this.hash = parseInt(hash.digest('hex'), 16);
+            let service = root.lookupService(this.name);
+            this.methods = service.methodsArray;
 
-                    let service = new protobuf.Service(object.name);
-                    this.methods = service.methodsArray;
-                }
-            }
+            let hash = new FNV();
+            hash.update(service.getOption('(original_fully_qualified_descriptor_name)'));
+            this.hash = parseInt(hash.digest('hex'), 16);
+
+            global.amqpConnection.createChannel().then((channel) => {
+                this.amqpChannel = channel;
+                channel.assertQueue('', {autoDelete: true}).then((ok) => {
+                    channel.bindQueue(ok.queue, 'battlenet_aurora_bus', this.getServiceHash().toString()).then(() => {
+                        channel.consume(ok.queue, (message) => {
+                            if (message.properties.requestId !== undefined) {
+                                let method = this.methods.find((element) => {
+                                    return element.getOption('(method_id)') === message.properties.header.method_id;
+                                });
+                                let response = protobuf.lookupType(method.responseType).decode(message.content);
+                                this.callbacks[message.properties.requestId](response);
+                            }
+                        });
+                    });
+                });
+            });
         });
     }
 
-    hash() {
+    getServiceHash() {
         return this.hash;
     }
 
@@ -83,17 +56,25 @@ module.exports = class Listener{
         this.clientQueueName = queueName;
     }
 
-    call(methodName, call){
+    call(methodName, call, callback){
         let method = this.methods.find((element) => {
             return element.name === methodName;
         });
 
+        let requestId = uuid();
         let request = new protobuf.lookup(method.requestType);
         call(request);
-        let requestHeader = new Header();
-        requestHeader.service_hash = this.hash;
-        requestHeader.method_id = method.getOption('method_id');
-        requestHeader.size = request.encode().length;
+        let header = new Header();
+        header.service_hash = this.hash;
+        header.method_id = method.getOption('(method_id)');
+        header.size = request.encode().length;
 
+        this.amqpChannel.sendToQueue(this.clientQueueName, request.encode(),
+            {
+                headers: header.toObject(),
+                requestId: requestId
+            }, () => {
+            this.callbacks[requestId] = callback;
+        });
     }
 };
