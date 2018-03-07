@@ -3,7 +3,7 @@
  */
 const crypto = require('crypto');
 const zlib = require('zlib');
-var mongoose = require('mongoose');
+const mongoose = require('mongoose');
 mongoose.Promise = global.Promise;
 const ByteBuffer = require('bytebuffer');
 const adler32 = require('adler32-umd');
@@ -16,14 +16,8 @@ const character = global.connection.model('Character', characterSchema);
 const Attribute = global.builder.build("bgs.protocol.Attribute");
 const Variant = global.builder.build("bgs.protocol.Variant");
 
-/*function toCString(string){
-    var buffer = new SmartBuffer("ascii");
-    buffer.writeStringNT(string);
-    return buffer.toBuffer();
-}*/
-
 function GetJSON(param, name){
-    var string = param.blob_value.readCString();
+    let string = param.blob_value.readCString();
     return JSON.parse(string.replace(name+":", ""));
 }
 
@@ -37,7 +31,6 @@ function compress(input, callback) {
     const string = Buffer.alloc(stringSize + 1);
     string.write(input, "utf8");
     string.writeUInt8(0x00, stringSize);
-    //console.log(string.toString('hex'));
 
     zlib.deflate(string, {strategy: zlib.Z_BEST_SPEED}, function (err, compressed) {
         const buffer = new ByteBuffer(4 + compressed.length, ByteBuffer.LITTLE_ENDIAN);
@@ -59,7 +52,7 @@ module.exports = class GameUtilitiesService extends Service{
         super("GameUtilitiesService", socket, "game_utilities");
         this.serviceHash = 0x3FC1274D;
 
-        var _socket = socket;
+        const _socket = socket;
 
         this.registerHandler("ProcessClientRequest", function(request, response, token, send){
             var command = null;
@@ -83,7 +76,7 @@ module.exports = class GameUtilitiesService extends Service{
                 if (command === "RealmListTicketRequest_v1_b9"){
                     const identity = GetJSON(params.Identity, "JSONRealmListTicketIdentity");
                     const clientInfo = GetJSON(params.ClientInfo, "JSONRealmListTicketClientInformation");
-                    var gameAccount = _socket.account.getGameAccount(identity.gameAccountID, identity.gameAccountRegion);
+                    let gameAccount = _socket.account.getGameAccount(identity.gameAccountID, identity.gameAccountRegion);
 
                     if (gameAccount){
                         gameAccount.clientSecret = new Buffer(clientInfo.info.secret);
@@ -97,7 +90,8 @@ module.exports = class GameUtilitiesService extends Service{
                         send(token, 0x80000078);
                     }
 
-                } else if (command === "RealmListRequest_v1_b9"){
+                }
+                else if (command === "RealmListRequest_v1_b9"){
                     const subRegionId = parseInt(commandValue.string_value.split("")[2], 10);
                     var realmlist = { "updates": [] };
                     var charactersCount = { "counts": [] };
@@ -145,7 +139,6 @@ module.exports = class GameUtilitiesService extends Service{
                             response.add("attribute", new Attribute({ "name": "Param_RealmList",
                                                                       "value": new Variant({ "blob_value": realmListCompressed })}));
 
-
                             compress(SetJSON("JSONRealmCharacterCountList", charactersCount), function(err, characterCountCompressed){
                                 if (err){
                                     send(token, 0x800000C8);
@@ -159,10 +152,11 @@ module.exports = class GameUtilitiesService extends Service{
                             });
                         });
                     });
-                } else if (command === "LastCharPlayedRequest_v1_b9"){
+                }
+                else if (command === "LastCharPlayedRequest_v1_b9"){
                     send(token, 0x80000069);
-                } else if (command === "RealmJoinRequest_v1_b9"){
-                    console.log(params);
+                }
+                else if (command === "RealmJoinRequest_v1_b9"){
                     const realmAddress = realmAddressToString(params.RealmAddress);
                     global.redisConnection.get(`${realmAddress}-server-address`, function (err, serverAddress) {
                         compress(SetJSON("JSONRealmListServerIPAddresses", serverAddress), function (err, serverAddressesCompressed) {
@@ -184,7 +178,8 @@ module.exports = class GameUtilitiesService extends Service{
                             });
                         });
                     });
-                } else {
+                }
+                else {
                     console.log(command);
                     console.log(params);
                 }

@@ -7,6 +7,6 @@ const Service = require("./service.js");
 
 module.exports = class ConnectionService extends Service{
     constructor(){
-        super('proto/bnet/connection_service.proto');
+        super('ConnectionService', 'proto/bnet/connection_service.proto');
     }
 };

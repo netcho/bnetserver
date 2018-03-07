@@ -20,8 +20,8 @@ module.exports = class AccountService extends Service{
 
         this.registerHandler("GetGameAccountState", function(request, response, token, send){
             var gameAccount = socket.account.gameAccounts.find(function(account, index, array){
-                return request.game_account_id.low.toNumber() == account.entityId.low &&
-                       request.game_account_id.high.toNumber() == account.entityId.high;
+                return request.game_account_id.low.toNumber() === account.entityId.low &&
+                       request.game_account_id.high.toNumber() === account.entityId.high;
             });
             
             if (gameAccount){
