@@ -1,50 +1,35 @@
-const Service = require('../service.js');
+const protobuf = require('protobufjs');
+
+const Service = require('./service.js');
+
+const accountTypes = protobuf.loadSync('proto/bnet/account_types.proto');
+
+const privacyInfo = accountTypes.lookupType('bgs.protocol.account.v1.PrivacyInfo');
+const accountState = accountTypes.lookupType('bgs.protocol.account.v1.AccountState');
+const accountTags = accountTypes.lookupType('bgs.protocol.account.v1.AccountFieldTags');
 
 module.exports = class AccountService extends Service{
-    constructor(socket){
-        super("AccountService", socket);
-        this.serviceHash = 0x62DA0891;
+    constructor(){
+        super('AccountService', 'proto/bnet/account_service.proto');
 
-        this.registerHandler("GetAccountState", function(request, response, token, send){
-            if(request.options.field_privacy_info){
-                const PrivacyInfo = global.builder.build('bgs.protocol.account.v1.PrivacyInfo');
-                response.state.privacy_info = new PrivacyInfo({ "is_using_rid": false,
-                                                                "is_real_id_visible_for_view_friends": false,
-                                                                "is_hidden_from_friend_finder": true  });
+        this.registerHandler('GetAccountState', (context) => {
+            if (context.request.fieldPrivacyInfo) {
+                context.response.state = accountState.create();
 
-                response.tags.privacy_info_tag = 0xD7CA834D;
+                context.response.state.privacyInfo = privacyInfo.create();
+                context.response.state.privacyInfo.isUsingRid = false;
+                context.response.state.privacyInfo.isReadIdVisibleForViewFriends = false;
+                context.response.state.privacyInfo.isHiddenFromFriendFinder = true;
+
+                context.response.tags = accountTags.create();
+                context.response.tags.privaceInfoTag = 0xD7CA834D;
             }
 
-            send(token, response);
+            return Promise.resolve(0);
         });
 
-        this.registerHandler("GetGameAccountState", function(request, response, token, send){
-            var gameAccount = socket.account.gameAccounts.find(function(account, index, array){
-                return request.game_account_id.low.toNumber() === account.entityId.low &&
-                       request.game_account_id.high.toNumber() === account.entityId.high;
-            });
-            
-            if (gameAccount){
-                if(request.options.field_game_level_info){
-                    const GameLevelInfo = global.builder.build('bgs.protocol.account.v1.GameLevelInfo');
-                    response.state.game_level_info = new GameLevelInfo({ "name": gameAccount.displayName,
-                                                                         "program": gameAccount.entityId.high & 0xFFFFFFFF });
-                    response.tags.game_level_info_tag = 0x5C46D483;
-                }
-
-                if(request.options.field_game_status){
-                    const GameStatus = global.builder.build('bgs.protocol.account.v1.GameStatus');
-                    response.state.game_status = new GameStatus({ "is_suspended": gameAccount.hasOwnProperty("isSuspended"),
-                                                                   "is_banned": gameAccount.hasOwnProperty("isBanned"),
-                                                                   "program": gameAccount.entityId.high & 0xFFFFFFFF });
-
-                    response.tags.game_status_tag = 0x98B75F99;
-                }
-
-                send(token, response);
-            }else{
-                send(token, 0xC);
-            }
+        this.registerHandler('GetGameAccountState', (context) => {
+            return Promise.resolve(0);
         });
     }
 };

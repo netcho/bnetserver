@@ -27,86 +27,114 @@ module.exports = class Connection{
         this.clientId = undefined;
         this.amqpChannel = undefined;
         this.queueName = undefined;
+        this.keepaliveTimer = undefined;
 
-        let connectionService = new ConnectionService();
+        this.connectionService = new ConnectionService();
 
-        this.exportedServices[0] = connectionService;
-        this.importedServices[connectionService.getServiceHash()] = connectionService;
+        this.exportedServices[0] = this.connectionService.getServiceHash();
+        this.importedServices[this.connectionService.getServiceHash()] = this.connectionService;
 
-        global.etcd.getAll().prefix('aurora/services/').keys().then((services) => {
+        /*global.etcd.getAll().prefix('aurora/services/').keys().then((services) => {
             services.forEach((serviceKey) => {
                 global.etcd.get(serviceKey).number().then((serviceId) => {
                     this.exportedServices.push(serviceId);
                 });
             });
+        });*/
+
+        this.connectionService.registerHandler('Connect', (context) => {
+            return global.amqpConnection.createChannel().then((channel) => {
+                this.amqpChannel = channel;
+                return Promise.resolve(channel);
+            }).then((channel) => {
+                return channel.assertQueue('', {autoDelete: true});
+            }).then((result) => {
+                this.queueName = result.queue;
+                return this.amqpChannel.consume(result.queue, (message) => {
+                    if (message.properties.correlationId) {
+                        global.logger.info('Received request from backend');
+                        if (message.properties.type !== '.bgs.protocol.NO_RESPONSE')
+                            this.requests[this.requestToken] = message.properties.correlationId;
+
+                        let requestHeader = Header.fromObject(message.properties.headers);
+                        requestHeader.token = this.requestToken++;
+                        if (!this.bindless) {
+                            requestHeader.serviceId = this.importedServices[requestHeader.serviceHash];
+                        } else {
+                            requestHeader.serviceId = 0;
+                        }
+                        let requestBuffer = Buffer.from(message.content);
+                        requestHeader.size = requestBuffer.length;
+
+                        let headerBuffer = Header.encode(requestHeader).finish();
+                        let buffer = Buffer.alloc(2 + headerBuffer.length + requestHeader.size);
+                        buffer.writeUInt16BE(headerBuffer.length, 0);
+                        headerBuffer.copy(buffer, 2);
+                        requestBuffer.copy(buffer, 2+headerBuffer.length);
+                        this.socket.write(buffer);
+                    }
+                    else {
+                        this.socket.write(Buffer.from(message.content));
+                    }
+                    this.amqpChannel.ack(message);
+                });
+            }).then(()=>{
+                if(context.request.clientId !== null) {
+                    this.clientId = context.request.clientId;
+                    context.response.client_id = context.request.clientId;
+                }
+
+                if (context.response.useBindlessRpc !== null) {
+                    this.bindless = context.request.useBindlessRpc;
+                }
+
+                context.response.serverId = ProcessId.create();
+                context.response.serverId.label = process.pid;
+                context.response.serverId.epoch = Math.floor(Date.now());
+                context.response.serverTime = microtime.now();
+                context.response.useBindlessRpc = this.bindless;
+
+                if (!this.bindless) {
+                    for (let boundService in context.request.bindRequest.importedService) {
+                        context.response.bindResponse.importedServiceId.push(this.exportedServices.findIndex((serviceHash) =>
+                        {return serviceHash === boundService.hash}));
+                    }
+
+                    for(let boundService in context.request.bindRequest.exportedService) {
+                        this.importedServices[boundService.hash] = boundService.id;
+                    }
+
+                    context.response.bindResult = 0;
+                }
+
+                this.keepaliveTimer = setTimeout(()=>{
+                    global.logger.info('Closing connection due to exceeded timeout');
+                    this.disconnect();
+                }, 30*1000);
+
+                this.state = ConnectionState.Connected;
+
+                return Promise.resolve(0);
+            });
         });
 
-        connectionService.registerHandler('Connect', (context) => {
-            if(context.request.clientId !== null) {
-                this.clientId = context.request.clientId;
-                context.response.client_id = context.request.clientId;
-            }
+        this.connectionService.registerHandler('KeepAlive', ()=>{
+            global.logger.info('Received KeepAlive on connection');
 
-            if (context.response.useBindlessRpc !== null) {
-                this.bindless = context.request.useBindlessRpc;
-            }
+            clearTimeout(this.keepaliveTimer);
+            this.keepaliveTimer = setTimeout(()=>{
+                global.logger.info('Closing connection due to exceeded timeout');
+                this.disconnect();
+            }, 30*1000);
 
-            context.response.serverId = ProcessId.create();
-            context.response.serverId.label = process.pid;
-            context.response.serverId.epoch = Math.floor(Date.now());
-            context.response.serverTime = microtime.now();
-            context.response.useBindlessRpc = this.bindless;
+            return Promise.resolve(0);
+        });
 
-            if (!this.bindless) {
-                for (let boundService in context.request.bindRequest.importedService) {
-                    context.response.bindResponse.importedServiceId.push(this.exportedServices.findIndex((serviceHash) =>
-                    {return serviceHash === boundService.hash}));
-                }
-
-                for(let boundService in context.request.bindRequest.exportedService) {
-                    this.importedServices[boundService.hash] = boundService.id;
-                }
-
-                context.response.bindResult = 0;
-            }
-
-            global.amqpConnection.createChannel().then((channel) => {
-                this.amqpChannel = channel;
-                channel.assertQueue('', {autoDelete: true}).then((ok) => {
-                    this.queueName = ok.queue;
-                    channel.consume(ok.queue).then((message) => {
-                        if(message.hasOwnProperty('properties')){
-                            if (message.properties.hasOwnProperty('requestId')) {
-                                this.requests[this.requestToken] = message.properties.requestId;
-
-                                let requestHeader = Header.fromObject(message.properties.headers);
-                                requestHeader.token = this.requestToken++;
-                                if (!this.bindless) {
-                                    requestHeader.serviceId = this.importedServices[requestHeader.serviceHash];
-                                } else {
-                                    requestHeader.serviceId = 0;
-                                }
-                                requestHeader.size = message.content.length;
-
-                                let headerSize = requestHeader.encode().length;
-                                let buffer = Buffer.alloc(2+headerSize+requestHeader.size);
-                                buffer.writeUInt16BE(headerSize);
-                                requestHeader.encode().copy(buffer, 2);
-                                message.content.copy(buffer, 2+headerSize);
-                                this.socket.write(buffer);
-                            }
-                            else {
-                                this.socket.write(message.content);
-                            }
-                            channel.ack(message);
-                        }
-                    });
-                })
-            });
-
-            this.state = ConnectionState.Connected;
-
-            return 0;
+        this.connectionService.registerHandler('RequestDisconnect', (context) => {
+            global.logger.info('Client requested disconnect with code: '+context.request.errorCode);
+            clearTimeout(this.keepaliveTimer);
+            this.disconnect();
+            return Promise.resolve(0);
         });
 
         this.socket.on('data', (data) => {
@@ -120,41 +148,52 @@ module.exports = class Connection{
                     const header = Header.decode(data.slice(2, 2+headerSize));
 
                     if (header.serviceId === 0xFE) {
-                        var responseHash = header.servicHash;
+                        let responseHash = header.servicHash;
 
                         if (!this.bindless) {
                             responseHash = this.importedServices[this.requests[header.token]];
                         }
 
-                        global.logger.debug('Received response on service: '+requestHash+' with methodId: '+header.methodId);
+                        global.logger.debug('Received response on service: '+responseHash+' with methodId: '+header.methodId);
 
-                        this.amqpChannel.publish('battlenet_aurora_bus', responseHash.toString(), data,
-                            { headers: header.toObject(),
-                                requestId: this.requests[header.token] });
+                        this.amqpChannel.publish('battlenet_aurora_bus', responseHash.toString(), data.slice(2+headerSize),
+                            { headers: header, requestId: this.requests[header.token] });
                     } else {
-                        if (header.serviceId === 0) {
-                            let buffer = this.exportedServices[header.serviceId].handleCall(header, data.slice(2+headerSize));
-                            this.socket.write(buffer);
+                        global.logger.debug('Received request on service: '+header.serviceHash+' with methodId: '+header.methodId);
+
+                        let requestHash = header.serviceHash;
+
+                        if (!this.bindless) {
+                            requestHash = this.exportedServices[header.serviceId];
+                        }
+
+                        if (requestHash === this.connectionService.getServiceHash()){
+                            let context = {
+                                queueName: this.queueName,
+                                header: header,
+                                request: null,
+                                response: null
+                            };
+                            this.connectionService.handleCall(context, data.slice(2+headerSize)).then((buffer)=>{
+                                this.socket.write(buffer);
+                            }).catch((error) => {
+                                global.logger.error('Error: '+error+' when calling method: '+header.methodId);
+                            });
+                        }
+                        else if (requestHash) {
+                            this.amqpChannel.publish('battlenet_aurora_bus', requestHash.toString(), data.slice(2+headerSize),
+                                { headers: Header.toObject(header), replyTo: this.queueName });
                         } else {
-                            var requestHash = header.serviceHash;
-
-                            if (!this.bindless) {
-                                requestHash = this.exportedServices[header.serviceId];
-                            }
-
-                            global.logger.debug('Received request on service: '+requestHash+' with methodId: '+header.methodId);
-
-                            if (requestHash) {
-                                this.amqpChannel.publish('battlenet_aurora_bus', requestHash.toString(), data,
-                                    { headers: header.toObject(),
-                                      replyTo: this.queueName });
-                            } else {
-                                //send error ERROR_RPC_INVALID_SERVICE
-                            }
+                            //send error ERROR_RPC_INVALID_SERVICE
                         }
                     }
                 }
             }
         });
+    }
+
+    disconnect() {
+        //this.amqpChannel.close();
+        this.socket.end();
     }
 };

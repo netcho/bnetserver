@@ -4,8 +4,8 @@
 'use strict';
 
 const FNV = require('fnv').FNV;
-const protobuf = require('protobufjs');
 const uuid = require('uuid/v4');
+const protobuf = require('protobufjs');
 
 const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
 
@@ -17,64 +17,61 @@ module.exports = class Listener {
         this.callbacks = {};
         this.clientQueueName = undefined;
         this.amqpChannel = undefined;
+        this.queueName = undefined;
+        this.rootNamespace = protobuf.loadSync(file);
 
-        protobuf.load(file, (err, root) => {
-            if (err)
-                throw err;
+        let service = this.rootNamespace.lookupService(this.name);
+        this.methods = service.methodsArray;
 
-            let service = root.lookupService(this.name);
-            this.methods = service.methodsArray;
+        let hash = new FNV();
+        hash.update(service.getOption('(original_fully_qualified_descriptor_name)'));
+        this.hash = parseInt(hash.digest('hex'), 16);
 
-            let hash = new FNV();
-            hash.update(service.getOption('(original_fully_qualified_descriptor_name)'));
-            this.hash = parseInt(hash.digest('hex'), 16);
-
-            global.amqpConnection.createChannel().then((channel) => {
-                this.amqpChannel = channel;
-                channel.assertQueue('', {autoDelete: true}).then((ok) => {
-                    channel.bindQueue(ok.queue, 'battlenet_aurora_bus', this.getServiceHash().toString()).then(() => {
-                        channel.consume(ok.queue, (message) => {
-                            if (message.properties.requestId !== undefined) {
-                                let method = this.methods.find((element) => {
-                                    return element.getOption('(method_id)') === message.properties.header.method_id;
-                                });
-                                let response = protobuf.lookupType(method.responseType).decode(message.content);
-                                this.callbacks[message.properties.requestId](response);
-                            }
-                        });
+        global.amqpConnection.createChannel().then((channel) => {
+            this.amqpChannel = channel;
+            return Promise.resolve(channel);
+        }).then((channel) => {
+           return channel.assertQueue('', {autoDelete: true});
+        }).then((result) => {
+            this.queueName = result.queue;
+            return this.amqpChannel.bindQueue(result.queue, 'battlenet_aurora_bus', this.hash.toString());
+        }).then(()=>{
+            this.amqpChannel.consume(this.queueName, (message) => {
+                if (message.properties.requestId !== undefined) {
+                    let method = this.methods.find((element) => {
+                        return element.getOption('(method_id)') === message.properties.headers.methodId;
                     });
-                });
+                    let response = this.rootNamespace.lookupType(method.responseType).decode(message.content);
+                    this.callbacks[message.properties.requestId](response);
+                }
             });
         });
     }
 
-    getServiceHash() {
-        return this.hash;
-    }
-
-    setQueueName(queueName) {
-        this.clientQueueName = queueName;
-    }
-
-    call(methodName, call, callback){
+    call(methodName, context, call, callback = undefined){
         let method = this.methods.find((element) => {
             return element.name === methodName;
         });
 
         let requestId = uuid();
-        let request = new protobuf.lookup(method.requestType);
+        let requestType = this.rootNamespace.lookupType(method.requestType);
+        let request = requestType.create();
         call(request);
-        let header = new Header();
-        header.service_hash = this.hash;
-        header.method_id = method.getOption('(method_id)');
-        header.size = request.encode().length;
+        let requestBuffer = requestType.encode(request).finish();
+        let header = Header.create();
+        header.serviceHash = this.hash;
+        header.methodId = method.getOption('(method_id)');
+        header.size = requestBuffer.length;
 
-        this.amqpChannel.sendToQueue(this.clientQueueName, request.encode(),
+        this.amqpChannel.sendToQueue(context.queueName, requestBuffer,
             {
-                headers: header.toObject(),
-                requestId: requestId
+                headers: Header.toObject(header),
+                correlationId: requestId,
+                type: method.responseType
             }, () => {
-            this.callbacks[requestId] = callback;
+            if (method.responseType !== '.bgs.protocol.NO_RESPONSE') {
+                this.callbacks[requestId] = callback;
+            }
         });
     }
 };

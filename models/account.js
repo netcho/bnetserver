@@ -2,7 +2,10 @@
  * Created by kaloyan on 17.7.2016 г..
  */
 const mongoose = require('mongoose');
+require('mongoose-long')(mongoose);
 const Long = require('long');
+
+const SchemaTypes = mongoose.Schema.Types;
 
 const regions = {
     UNKNOWN: 0,
@@ -15,7 +18,7 @@ const regions = {
 };
 
 const gameAccount = new mongoose.Schema({
-    entityId: { high: Number, low: Number },
+    entityId: { high: SchemaTypes.Long, low: SchemaTypes.Long },
     isBanned: Boolean,
     isSuspended: Boolean,
     displayName: String });
@@ -35,22 +38,22 @@ gameAccount.methods.setProgram = function (game) {
         bytes.push(stringReversed.charCodeAt(j));
 
     const fourCC = (bytes[3] & 0xFF000000) | (bytes[2] & 0xFF0000) | (bytes[1] & 0xFF00) | (bytes[0] & 0xFF);
-    this.entityId.high = (this.entityId.high & 0xFFFFFFFF00000000) | fourCC;
+    this.entityId.high = Long.fromBits(fourCC, this.entityId.high.high);
 };
 
 gameAccount.methods.getProgram = function () {
-    const fourCCInt = this.entityId.high & 0xFFFFFFFF;
+    const fourCCInt = this.entityId.high.and(0xFFFFFFFF);
     return String.fromCharCode(fourCCInt & 0xFF) + String.fromCharCode(fourCCInt & 0xFF00) + String.fromCharCode(fourCCInt & 0xFF0000) + String.fromCharCode(fourCCInt & 0xFF000000)
 };
 
 gameAccount.methods.setRegion = function (region) {
-    const fourCCInt = this.entityId.high & 0xFFFFFFFF;
-    const type = this.entityId.high & 0xFFFFFF0000000000;
-    this.entityId.high = type | ((region << 32) & 0xFF00000000) | fourCCInt;
+    const fourCCInt = this.entityId.high.and(0xFFFFFFFF).toNumber(true);
+    const type = this.entityId.high.shiftRightUnsigned(56);
+    this.entityId.high = Long.fromBits(fourCCInt, (type << 24) | (region & 0xFF));
 };
 
 gameAccount.methods.getRegion = function () {
-    return Long.fromNumber(this.entityId.high).shiftRight(32).and(0xFF).toNumber();
+    return this.entityId.high.shiftRight(32).and(0xFF).toNumber();
 };
 
 const accountSchema = new mongoose.Schema({
@@ -59,7 +62,7 @@ const accountSchema = new mongoose.Schema({
     isBanned:       Boolean,
     isSuspended:    Boolean,
     battleTag:      String,
-    accountId:      { high: Number, low: Number },
+    accountId:      { high: SchemaTypes.Long, low: SchemaTypes.Long },
     gameAccounts:   [gameAccount],
     country:        String,
     region:         Number

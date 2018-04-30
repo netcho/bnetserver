@@ -12,7 +12,6 @@ module.exports = class Service{
     constructor(name, file) {
         this.hash = 0;
         this.name = name;
-        this.clientQueueName = undefined;
         this.methods = [];
         this.handlers = [];
         this.rootNamespace = protobuf.loadSync(file);
@@ -34,10 +33,6 @@ module.exports = class Service{
         return this.name;
     }
 
-    setClientQueueName(name) {
-        this.clientQueueName = name;
-    }
-
     registerHandler(name, handler) {
         this.methods.forEach((method) => {
             if (method.hasOwnProperty('name') && method.name === name) {
@@ -46,42 +41,48 @@ module.exports = class Service{
         });
     }
 
-    handleCall(requestHeader, payload) {
-        if (this.handlers[requestHeader.methodId] !== undefined) {
+    handleCall(context, payload) {
+        if (this.handlers[context.header.methodId] !== undefined) {
             let method = this.methods.find((element) => {
-                return element.getOption('(method_id)') === requestHeader.methodId;
+                return element.getOption('(method_id)') === context.header.methodId;
             });
 
             let responseType = this.rootNamespace.lookupType(method.responseType);
             let requestType = this.rootNamespace.lookupType(method.requestType);
 
-            let context = {
-                response: responseType.create(),
-                request: requestType.decode(payload),
-                clientQueueName: this.clientQueueName
-            };
+            context.response = responseType.create();
 
-            let status = this.handlers[requestHeader.methodId](context);
-            let responseBuffer = responseType.encode(context.response).finish();
-
-            if(method.responseType !== '.bgs.protocol.NO_RESPONSE') {
-                let responseHeader = Header.create();
-                requestHeader.serviceId = 0xFE;
-                responseHeader.token = requestHeader.token;
-                responseHeader.methodId = requestHeader.methodId;
-                responseHeader.serviceHash = requestHeader.serviceHash;
-                responseHeader.status = status;
-                responseHeader.size = responseBuffer.length;
-
-                let headerBuffer = Header.encode(responseHeader).finish();
-
-                let buffer = Buffer.alloc(2 + headerBuffer.length + responseBuffer.length);
-                buffer.writeUInt16BE(headerBuffer.length, 0);
-                headerBuffer.copy(buffer, 2);
-                responseBuffer.copy(buffer,2+headerBuffer.length);
-
-                return buffer;
+            if (method.requestType !== '.bgs.protocol.NoData') {
+                context.request = requestType.decode(payload);
             }
+
+            return new Promise((resolve, reject)=> {
+                this.handlers[context.header.methodId](context).then((status) => {
+                    if (status === 0) {
+                        if(method.responseType !== '.bgs.protocol.NO_RESPONSE') {
+                            let responseBuffer = responseType.encode(context.response).finish();
+                            let responseHeader = Header.create();
+                            responseHeader.serviceId = 0xFE;
+                            responseHeader.serviceHash = context.header.serviceHash;
+                            responseHeader.methodId = context.header.methodId;
+                            responseHeader.token = context.header.token;
+                            responseHeader.status = status;
+                            responseHeader.size = responseBuffer.length;
+
+                            let headerBuffer = Header.encode(responseHeader).finish();
+
+                            let buffer = Buffer.alloc(2 + headerBuffer.length + responseBuffer.length);
+                            buffer.writeUInt16BE(headerBuffer.length, 0);
+                            headerBuffer.copy(buffer, 2);
+                            responseBuffer.copy(buffer,2+headerBuffer.length);
+
+                            resolve(buffer);
+                        }
+                    }
+                }, (error) => {
+                    reject(error);
+                });
+            });
         }
     }
 };

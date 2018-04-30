@@ -11,20 +11,20 @@ const bcrypt = require('bcrypt');
 const express = require('express');
 const mongoose = require('mongoose');
 const bodyParser = require('body-parser');
-const etcd = require('etcd3').Etcd3;
+const etcd = require('node-etcd');
 const amqplib = require('amqplib');
 const winston = require('winston');
 
 const ServiceReceiver = require('./messaging/receiver');
 const AuthenticationService = require('./services/authentication');
+const AccountService = require('./services/account');
 
 const Account = require('./models/account.js');
 
 mongoose.Promise = global.Promise;
 winston.emitErrs = true;
 
-global.etcd = new etcd().namespace('battlenet/');
-global.connection = mongoose.createConnection(process.env.MONGO_URL);
+global.etcd = new etcd();
 global.logger = new winston.Logger({
     transports: [
         new winston.transports.File({
@@ -46,28 +46,32 @@ global.logger = new winston.Logger({
     exitOnError: false
 });
 
+mongoose.connect(process.env.MONGO_URL, {useMongoClient: true});
 amqplib.connect(process.env.RABBIT_URL).then((conn) => {
     global.amqpConnection = conn;
     new ServiceReceiver(new AuthenticationService());
+    new ServiceReceiver(new AccountService());
 }, (err) => {
     global.logger.error(err);
 });
 
 const Connection = require('./connection.js');
 
-const server = tls.Server({
+const server = tls.createServer({
     key: fs.readFileSync('certs/server-key.pem'),
     cert: fs.readFileSync('certs/server-cert.pem')
+    //pfx: fs.readFileSync('certs/dev.pfx')
 }, (socket) => {
-    global.logger.info('Received a new connection from: ' + socket.remoteAddress);
+    global.logger.debug('Received a new connection from: ' + socket.remoteAddress);
     new Connection(socket);
 });
 
 const rest = express();
 
 rest.use(bodyParser.json());
+rest.use(bodyParser.urlencoded({ extended: true }));
 
-rest.get('/bnet/login/', (req, res) => {
+rest.get('/bnetserver/login/', (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.json({
         "type": 1,
@@ -89,9 +93,9 @@ rest.get('/bnet/login/', (req, res) => {
     });
 });
 
-rest.post('/bnet/login/', (req, res) => {
-    var username = null;
-    var password = null;
+rest.post('/bnetserver/login/', (req, res) => {
+    let username = null;
+    let password = null;
 
     res.setHeader('Content-Type', 'application/json');
     req.body.inputs.forEach(function (input) {
@@ -108,32 +112,44 @@ rest.post('/bnet/login/', (req, res) => {
 
     Account.findOne({email: username}, function (err, account) {
         if (err){
-            loginResult.authentication_state = "LOGIN";
-            global.logger.error("Account "+username+" not found");
+
+            global.logger.error('Account '+username+' not found');
         }
 
         if (account){
             if(bcrypt.compareSync(password, account.hash)) {
                 const loginTicket = "TC-"+crypto.randomBytes(20).toString('hex');
                 loginResult.login_ticket = loginTicket;
-                global.etcd.put('login_tickets/'+loginTicket).value(account.id);
+                global.etcd.set('login_tickets/'+loginTicket, account.id);
             }else{
-                global.logger.error("Failed logging attempt for account: "+username);
+                global.logger.error('Invalid password for account: '+username);
+                loginResult.authentication_state = "LOGIN";
             }
         }
         res.json(loginResult);
     });
 });
 
+rest.post('/bnet/createAccount/', (req, res) => {
+    let newAccount = new Account(req.body);
+    newAccount.save().then(()=>{
+        res.sendStatus(201);
+    }, (err) => {
+        res.sendStatus(500);
+        global.logger.error(err);
+    });
+});
+
 const restServer = https.createServer({
-    key: fs.readFileSync("certs/server-key.pem"),
-    cert: fs.readFileSync("certs/server-cert.pem")
+    key: fs.readFileSync('certs/server-key.pem'),
+    cert: fs.readFileSync('certs/server-cert.pem')
 }, rest);
 
-server.listen(1119, '172.16.1.103', () => {
+server.listen(1119, () => {
     global.logger.info('Listening on port 1119');
 });
 
 restServer.listen(443, () => {
+    global.etcd.set('aurora/WebAuthService/url', 'https://127.0.0.1:443/bnetserver/login/');
     global.logger.info('REST Service listening');
 });

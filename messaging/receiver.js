@@ -1,18 +1,44 @@
 'use strict';
 
+const protobuf = require('protobufjs');
+
+const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
+
 module.exports = class Receiver{
     constructor(service){
+        this.amqpChannel = undefined;
         global.amqpConnection.createChannel().then((channel) => {
-            channel.assertExchange('battlenet_aurora_bus', 'direct').then(() => {
-                channel.assertQueue('', {autoDelete: true}).then((ok) => {
-                    channel.bindQueue(ok.name, 'battlenet_aurora_bus', service.getServiceHash().toString()).then(() => {
-                        channel.consume(ok.name, (message) => {
-                            service.setClientQueueName(message.properties.replyTo);
-                            channel.sendToQueue(message.properties.replyTo, service.handleCall(message.properties.headers, message.content));
-                        });
-                        global.etcd.put('aurora/services/'+service.getServiceName()+'/hash').value(service.getServiceHash().toString());
-                        global.logger.info(service.getServiceName()+' listening');
-                    });
+            this.amqpChannel = channel;
+            return Promise.resolve(channel);
+        }).then((channel) => {
+            return channel.assertExchange('battlenet_aurora_bus', 'direct');
+        }).then(() => {
+            return this.amqpChannel.assertQueue('', {autoDelete: true});
+        }).then((result) => {
+            this.amqpChannel.bindQueue(result.queue, 'battlenet_aurora_bus', service.getServiceHash().toString());
+            return Promise.resolve(result.queue);
+        }).then((queueName) => {
+            global.etcd.set('aurora/services/'+service.getServiceName()+'/hash', service.getServiceHash().toString());
+            global.logger.info(service.getServiceName()+' listening');
+            this.amqpChannel.consume(queueName, (message) => {
+                let context = {
+                    queueName: message.properties.replyTo,
+                    header: message.properties.headers,
+                    request: null,
+                    response: null
+                };
+                service.handleCall(context, message.content).then((buffer) => {
+                    this.amqpChannel.sendToQueue(message.properties.replyTo, buffer);
+                }, (error) => {
+                    let errorHeader = Header.fromObject(message.properties.headers);
+                    errorHeader.serviceId = 0xFE;
+                    errorHeader.status = error;
+                    errorHeader.size = 0;
+                    let headerBuffer = Header.encode(errorHeader).finish();
+                    let buffer = Buffer.alloc(2 + headerBuffer.length);
+                    buffer.writeUInt16BE(headerBuffer.length, 0);
+                    headerBuffer.copy(buffer, 2);
+                    this.amqpChannel.sendToQueue(message.properties.replyTo, buffer);
                 });
             });
         });

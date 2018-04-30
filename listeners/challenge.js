@@ -7,12 +7,10 @@ module.exports = class ChallengeListener extends Listener {
         super('ChallengeListener', 'proto/bnet/challenge_service.proto');
     }
 
-    sendChallengeURL(url) {
-        this.call('OnExternalChallenge', (request) => {
-            request.payload_type = 'web_auth_url';
-            request.payload = Buffer.from(url);
-        }, (response) => {
-
+    sendChallengeURL(url, context) {
+        this.call('OnExternalChallenge', context, (request) => {
+            request.payloadType = 'web_auth_url';
+            request.payload = Buffer.from(url, 'ascii');
         });
     }
 };
