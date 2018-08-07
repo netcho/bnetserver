@@ -1,14 +1,6 @@
 'use strict';
 
 const crypto = require('crypto');
-/*const protobufjs = require('protobufjs');
-const long = require('long');
-
-protobufjs.util.long = long;
-protobufjs.configure();
-
-const entityTypes = protobufjs.loadSync('proto/bnet/entity_types.proto');
-const entityId = entityTypes.lookupType('bgs.protocol.EntityId');*/
 
 const Listener = require('./listener');
 
@@ -25,21 +17,23 @@ const Region = {
 };
 
 module.exports = class AuthenticationListener extends Listener{
-    constructor(){
+    constructor(context){
         super('AuthenticationListener', 'proto/bnet/authentication_service.proto');
+        this.clientQueue = context.queueName;
     }
 
-    sendLoginResult(status, account = undefined, context){
-        this.call('OnLogonComplete', context, (request) => {
+    OnLogonComplete(status, account = undefined, gameAccounts = undefined) {
+        this.call('OnLogonComplete', (request) => {
             request.errorCode = status;
+
             if(account) {
-                global.logger.debug(account.accountId.toObject());
-                request.accountId = account.accountId.toObject();
+                request.accountId = account.getEntityId();
+
                 request.battleTag = account.battleTag;
                 request.geoipCountry = account.country;
 
-                account.gameAccounts.forEach((gameAccount) => {
-                    request.gameAccountId.push(gameAccount.entityId.toObject());
+                gameAccounts.forEach((gameAccount) => {
+                    request.gameAccountId.push(gameAccount.getEntityId());
                 });
 
                 request.sessionKey = crypto.randomBytes(64).toString('hex');

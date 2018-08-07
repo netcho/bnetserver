@@ -52,17 +52,22 @@ module.exports = class Connection{
                 this.queueName = result.queue;
                 return this.amqpChannel.consume(result.queue, (message) => {
                     if (message.properties.correlationId) {
-                        global.logger.info('Received request from backend');
-                        if (message.properties.type !== '.bgs.protocol.NO_RESPONSE')
+                        global.logger.debug('Received request from backend');
+
+                        if (message.properties.type !== '.bgs.protocol.NO_RESPONSE') {
                             this.requests[this.requestToken] = message.properties.correlationId;
+                        }
 
                         let requestHeader = Header.fromObject(message.properties.headers);
                         requestHeader.token = this.requestToken++;
+
                         if (!this.bindless) {
                             requestHeader.serviceId = this.importedServices[requestHeader.serviceHash];
-                        } else {
+                        }
+                        else {
                             requestHeader.serviceId = 0;
                         }
+
                         let requestBuffer = Buffer.from(message.content);
                         requestHeader.size = requestBuffer.length;
 
@@ -76,6 +81,7 @@ module.exports = class Connection{
                     else {
                         this.socket.write(Buffer.from(message.content));
                     }
+
                     this.amqpChannel.ack(message);
                 });
             }).then(()=>{
@@ -107,10 +113,7 @@ module.exports = class Connection{
                     context.response.bindResult = 0;
                 }
 
-                this.keepaliveTimer = setTimeout(()=>{
-                    global.logger.info('Closing connection due to exceeded timeout');
-                    this.disconnect();
-                }, 30*1000);
+                this.setConnectionTimeout();
 
                 this.state = ConnectionState.Connected;
 
@@ -122,10 +125,7 @@ module.exports = class Connection{
             global.logger.info('Received KeepAlive on connection');
 
             clearTimeout(this.keepaliveTimer);
-            this.keepaliveTimer = setTimeout(()=>{
-                global.logger.info('Closing connection due to exceeded timeout');
-                this.disconnect();
-            }, 30*1000);
+            this.setConnectionTimeout();
 
             return Promise.resolve(0);
         });
@@ -158,7 +158,8 @@ module.exports = class Connection{
 
                         this.amqpChannel.publish('battlenet_aurora_bus', responseHash.toString(), data.slice(2+headerSize),
                             { headers: header, requestId: this.requests[header.token] });
-                    } else {
+                    }
+                    else {
                         global.logger.debug('Received request on service: '+header.serviceHash+' with methodId: '+header.methodId);
 
                         let requestHash = header.serviceHash;
@@ -195,5 +196,12 @@ module.exports = class Connection{
     disconnect() {
         //this.amqpChannel.close();
         this.socket.end();
+    }
+
+    setConnectionTimeout() {
+        this.keepaliveTimer = setTimeout(()=>{
+            global.logger.info('Closing connection due to exceeded timeout');
+            this.disconnect();
+        }, 30*1000);
     }
 };

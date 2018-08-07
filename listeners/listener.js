@@ -15,9 +15,10 @@ module.exports = class Listener {
         this.name = name;
         this.methods = [];
         this.callbacks = {};
-        this.clientQueueName = undefined;
         this.amqpChannel = undefined;
         this.queueName = undefined;
+        this.clientQueue = undefined;
+        this.messageQueue = [];
         this.rootNamespace = protobuf.loadSync(file);
 
         let service = this.rootNamespace.lookupService(this.name);
@@ -42,13 +43,23 @@ module.exports = class Listener {
                         return element.getOption('(method_id)') === message.properties.headers.methodId;
                     });
                     let response = this.rootNamespace.lookupType(method.responseType).decode(message.content);
-                    this.callbacks[message.properties.requestId](response);
+                    this.callbacks[message.properties.requestId].resolve(response);
                 }
             });
+
+            process.nextTick((messageQueue, amqpChannel) => {
+                messageQueue.forEach((message) => {
+                    amqpChannel.sendToQueue(message.queueName, message.payload, {
+                        headers: message.headers,
+                        type: message.type,
+                        correlationId: message.correlationId
+                    });
+                });
+            }, this.messageQueue, this.amqpChannel);
         });
     }
 
-    call(methodName, context, call, callback = undefined){
+    call(methodName, call) {
         let method = this.methods.find((element) => {
             return element.name === methodName;
         });
@@ -63,15 +74,23 @@ module.exports = class Listener {
         header.methodId = method.getOption('(method_id)');
         header.size = requestBuffer.length;
 
-        this.amqpChannel.sendToQueue(context.queueName, requestBuffer,
-            {
-                headers: Header.toObject(header),
-                correlationId: requestId,
-                type: method.responseType
-            }, () => {
-            if (method.responseType !== '.bgs.protocol.NO_RESPONSE') {
-                this.callbacks[requestId] = callback;
-            }
+        this.messageQueue.push({
+            headers: Header.toObject(header),
+            payload: requestBuffer,
+            type: method.responseType,
+            queueName: this.clientQueue,
+            correlationId: requestId
         });
+
+        if (method.responseType !== '.bgs.protocol.NO_RESPONSE') {
+            this.callbacks[requestId] = {};
+
+            let listener = this;
+
+            return new Promise((reject, resolve) => {
+                listener.callbacks[requestId].resolve = resolve;
+                listener.callbacks[requestId].reject = reject;
+            });
+        }
     }
 };

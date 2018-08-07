@@ -3,31 +3,39 @@
  */
 'use strict';
 
+const crypto = require('crypto');
+
 const Service = require('./service');
 const ChallengeListener = require('../listeners/challenge');
 const AuthenticationListener = require('../listeners/authentication');
-const Account = require('../models/account');
+const models = require('../models/');
 
 module.exports = class AuthenticationService extends Service {
     constructor(){
         super('AuthenticationService', 'proto/bnet/authentication_service.proto');
 
-        let challengeListener = new ChallengeListener();
-        let authenticationListener = new AuthenticationListener();
-
         this.registerHandler('Logon', (context) => {
             global.logger.info('Logon Request for program '+context.request.program+' on '+context.request.platform);
 
-            challengeListener.sendChallengeURL('https://127.0.0.1:443/bnetserver/login/', context);
+            let loginTicket = "TC-"+crypto.randomBytes(20).toString('hex');
+
+            let challengeListener = new ChallengeListener(context);
+
+            global.etcd.set('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program', context.request.program, () => {
+                challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
+            });
 
             return Promise.resolve(0);
         });
 
         this.registerHandler('VerifyWebCredentials', (context) => {
             let loginTicket = Buffer.from(context.request.webCredentials).toString();
+
+            let authenticationListener = new AuthenticationListener(context);
+
             if (loginTicket.length) {
                 new Promise((resolve, reject) => {
-                    global.etcd.get('login_tickets/'+loginTicket, (err, result) => {
+                    global.etcd.get('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/accountId', (err, result) => {
                         if (err) {
                             reject(err);
                         }
@@ -35,19 +43,16 @@ module.exports = class AuthenticationService extends Service {
                         resolve(result.node.value);
                     });
                 }).then((accountId) => {
-                    return Account.findById(accountId).exec();
+                    return models.Account.findAll({ include: ['GameAccount'], where: { id: accountId }});
                 }).then((account) => {
-                    if(account) {
-                        if(account.gameAccounts.length) {
-                            authenticationListener.sendLoginResult(0, account, context); //ERROR_OK
-                        }
-                        else {
-                            authenticationListener.sendLoginResult(12, null, context); //ERROR_NO_GAME_ACCOUNT
-                        }
+                    if(account.gameAccounts.length) {
+                        authenticationListener.OnLogonComplete(0, account, []); //ERROR_OK
                     }
                     else {
-                        authenticationListener.sendLoginResult(4, null, context); //ERROR_NOT_EXISTS
+                        authenticationListener.OnLogonComplete(12); //ERROR_NO_GAME_ACCOUNT
                     }
+                }).catch(() => {
+                    authenticationListener.OnLogonComplete(4); //ERROR_NOT_EXISTS
                 });
 
                 return Promise.resolve(0);
