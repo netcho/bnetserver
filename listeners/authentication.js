@@ -27,13 +27,13 @@ module.exports = class AuthenticationListener extends Listener{
             request.errorCode = status;
 
             if(account) {
-                request.accountId = account.getEntityId();
+                request.accountId = account.entityId;
 
                 request.battleTag = account.battleTag;
                 request.geoipCountry = account.country;
 
                 gameAccounts.forEach((gameAccount) => {
-                    request.gameAccountId.push(gameAccount.getEntityId());
+                    request.gameAccountId.push(gameAccount.entityId);
                 });
 
                 request.sessionKey = crypto.randomBytes(64).toString('hex');

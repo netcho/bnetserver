@@ -15,7 +15,7 @@ module.exports = (sequelize, DataTypes) => {
         isSuspended: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'suspended' }
     }, {
         getterMethods: {
-            getEntityId: function () {
+            entityId() {
                 let id = entityId.create();
 
                 id.low = Long.fromString(this.id, true);
@@ -28,6 +28,7 @@ module.exports = (sequelize, DataTypes) => {
         timestamps: true,
         underscored: true
     });
+
     Account.associate = (models) => {
         Account.hasMany(models.GameAccount, {as: 'gameAccounts', foreignKey: 'account_id', sourceKey: 'id'});
     };

@@ -43,15 +43,22 @@ module.exports = class AuthenticationService extends Service {
                         resolve(result.node.value);
                     });
                 }).then((accountId) => {
-                    return models.Account.findAll({ include: ['GameAccount'], where: { id: accountId }});
+                    return models.Account.find({ include: [{model: models.GameAccount, as: 'gameAccounts'}], where: { id: accountId }});
                 }).then((account) => {
-                    if(account.gameAccounts.length) {
-                        authenticationListener.OnLogonComplete(0, account, []); //ERROR_OK
-                    }
-                    else {
-                        authenticationListener.OnLogonComplete(12); //ERROR_NO_GAME_ACCOUNT
-                    }
-                }).catch(() => {
+                    global.etcd.get('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program', (err, result) => {
+                        let usableGameAccounts = account.gameAccounts.filter((gameAccount) => {
+                            return gameAccount.program === result.node.value;
+                        });
+
+                        if(usableGameAccounts.length) {
+                            authenticationListener.OnLogonComplete(0, account, usableGameAccounts); //ERROR_OK
+                        }
+                        else {
+                            authenticationListener.OnLogonComplete(12); //ERROR_NO_GAME_ACCOUNT
+                        }
+                    });
+                }).catch((error) => {
+                    global.logger.error(error);
                     authenticationListener.OnLogonComplete(4); //ERROR_NOT_EXISTS
                 });
 

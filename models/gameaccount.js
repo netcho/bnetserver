@@ -13,10 +13,10 @@ module.exports = (sequelize, DataTypes) => {
         displayName: { type: DataTypes.STRING, allowNull: false, field: 'display_name' },
         isBanned: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'banned' },
         isSuspended: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'suspended' },
-        accountId: { type: DataTypes.BIGINT }
+        accountId: { type: DataTypes.BIGINT, allowNull: false, field: 'account_id' }
         }, {
         getterMethods: {
-            getEntityId: function () {
+            entityId() {
                 let id = entityId.create();
 
                 id.low = Long.fromString(this.id, true);
@@ -41,6 +41,7 @@ module.exports = (sequelize, DataTypes) => {
         timestamps: true,
         underscored: true
     });
+
     GameAccount.associate = (models) => {
         GameAccount.belongsTo(models.Account, { foreignKey: 'account_id', targetKey: 'id'});
     };
