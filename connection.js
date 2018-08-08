@@ -178,7 +178,7 @@ module.exports = class Connection{
                             this.connectionService.handleCall(context, data.slice(2+headerSize)).then((buffer)=>{
                                 this.socket.write(buffer);
                             }).catch((error) => {
-                                global.logger.error('Error: '+error+' when calling method: '+header.methodId);
+                                global.logger.error(error);
                             });
                         }
                         else if (requestHash) {

@@ -56,32 +56,28 @@ module.exports = class Service{
                 context.request = requestType.decode(payload);
             }
 
-            return new Promise((resolve, reject)=> {
-                this.handlers[context.header.methodId](context).then((status) => {
-                    if (status === 0) {
-                        if(method.responseType !== '.bgs.protocol.NO_RESPONSE') {
-                            let responseBuffer = responseType.encode(context.response).finish();
-                            let responseHeader = Header.create();
-                            responseHeader.serviceId = 0xFE;
-                            responseHeader.serviceHash = context.header.serviceHash;
-                            responseHeader.methodId = context.header.methodId;
-                            responseHeader.token = context.header.token;
-                            responseHeader.status = status;
-                            responseHeader.size = responseBuffer.length;
+            return this.handlers[context.header.methodId](context).then((status) => {
+                if (status === 0) {
+                    if(method.responseType !== '.bgs.protocol.NO_RESPONSE') {
+                        let responseBuffer = responseType.encode(context.response).finish();
+                        let responseHeader = Header.create();
+                        responseHeader.serviceId = 0xFE;
+                        responseHeader.serviceHash = context.header.serviceHash;
+                        responseHeader.methodId = context.header.methodId;
+                        responseHeader.token = context.header.token;
+                        responseHeader.status = status;
+                        responseHeader.size = responseBuffer.length;
 
-                            let headerBuffer = Header.encode(responseHeader).finish();
+                        let headerBuffer = Header.encode(responseHeader).finish();
 
-                            let buffer = Buffer.alloc(2 + headerBuffer.length + responseBuffer.length);
-                            buffer.writeUInt16BE(headerBuffer.length, 0);
-                            headerBuffer.copy(buffer, 2);
-                            responseBuffer.copy(buffer,2+headerBuffer.length);
+                        let buffer = Buffer.alloc(2 + headerBuffer.length + responseBuffer.length);
+                        buffer.writeUInt16BE(headerBuffer.length, 0);
+                        headerBuffer.copy(buffer, 2);
+                        responseBuffer.copy(buffer,2+headerBuffer.length);
 
-                            resolve(buffer);
-                        }
+                        return Promise.resolve(buffer);
                     }
-                }, (error) => {
-                    reject(error);
-                });
+                }
             });
         }
     }

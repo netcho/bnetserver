@@ -7,8 +7,12 @@ const accountTypes = protobuf.loadSync('proto/bnet/account_types.proto');
 const privacyInfo = accountTypes.lookupType('bgs.protocol.account.v1.PrivacyInfo');
 const accountState = accountTypes.lookupType('bgs.protocol.account.v1.AccountState');
 const accountTags = accountTypes.lookupType('bgs.protocol.account.v1.AccountFieldTags');
+const gameAccountState = accountTypes.lookupType('bgs.protocol.account.v1.GameAccountState');
+const gameAccountTags = accountTypes.lookupType('bgs.protocol.account.v1.GameAccountFieldTags');
+const gameLevelInfo = accountTypes.lookupType('bgs.protocol.account.v1.GameLevelInfo');
+const gameStatus = accountTypes.lookupType('bgs.protocol.account.v1.GameStatus');
 
-const Account = require('../models/account');
+const models = require('../models');
 
 module.exports = class AccountService extends Service{
     constructor(){
@@ -31,7 +35,30 @@ module.exports = class AccountService extends Service{
         });
 
         this.registerHandler('GetGameAccountState', (context) => {
-            return Promise.resolve(0);
+            context.response.state = gameAccountState.create();
+            context.response.tags = gameAccountTags.create();
+
+            return models.GameAccount.findById(context.request.gameAccountId.low.toString()).then((gameAccount) => {
+                if(context.request.options.hasOwnProperty('fieldGameLevelInfo')) {
+                    context.response.state.gameLevelInfo = gameLevelInfo.create();
+                    context.response.state.gameLevelInfo.name = gameAccount.displayName;
+                    context.response.state.gameLevelInfo.program = gameAccount.entityId.high.getLowBitsUnsigned();
+
+                    context.response.tags.gameLevelInfoTag = 0x5C46D483;
+                }
+
+                if(context.request.options.hasOwnProperty('fieldGameStatus')) {
+                    context.response.state.gameStatus = gameStatus.create();
+                    context.response.state.gameStatus.name = gameAccount.displayName;
+                    context.response.state.gameStatus.program = gameAccount.entityId.high.getLowBitsUnsigned();
+                    context.response.state.gameStatus.isBanned = gameAccount.isBanned;
+                    context.response.state.gameStatus.isSuspended = gameAccount.isSuspended;
+
+                    context.response.tags.gameStatusTag = 0x98B75F99;
+                }
+
+                return Promise.resolve(0);
+            });
         });
     }
 };

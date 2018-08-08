@@ -29,16 +29,21 @@ module.exports = class Receiver{
                 };
                 service.handleCall(context, message.content).then((buffer) => {
                     this.amqpChannel.sendToQueue(message.properties.replyTo, buffer);
-                }, (error) => {
-                    let errorHeader = Header.fromObject(message.properties.headers);
-                    errorHeader.serviceId = 0xFE;
-                    errorHeader.status = error;
-                    errorHeader.size = 0;
-                    let headerBuffer = Header.encode(errorHeader).finish();
-                    let buffer = Buffer.alloc(2 + headerBuffer.length);
-                    buffer.writeUInt16BE(headerBuffer.length, 0);
-                    headerBuffer.copy(buffer, 2);
-                    this.amqpChannel.sendToQueue(message.properties.replyTo, buffer);
+                }).catch((error) => {
+                    if (!Number.isNaN(error)) {
+                        let errorHeader = Header.fromObject(message.properties.headers);
+                        errorHeader.serviceId = 0xFE;
+                        errorHeader.status = error;
+                        errorHeader.size = 0;
+                        let headerBuffer = Header.encode(errorHeader).finish();
+                        let buffer = Buffer.alloc(2 + headerBuffer.length);
+                        buffer.writeUInt16BE(headerBuffer.length, 0);
+                        headerBuffer.copy(buffer, 2);
+                        this.amqpChannel.sendToQueue(message.properties.replyTo, buffer);
+                    }
+                    else {
+                        global.logger.error(error);
+                    }
                 });
             });
         });
