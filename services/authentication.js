@@ -4,6 +4,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const Aerospike = require('aerospike');
 
 const Service = require('./service');
 const ChallengeListener = require('../listeners/challenge');
@@ -21,11 +22,12 @@ module.exports = class AuthenticationService extends Service {
 
             let challengeListener = new ChallengeListener(context);
 
-            global.etcd.set('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program', context.request.program, () => {
+            return global.aerospike.operate(this.serviceKey, [
+                Aerospike.maps.put('loginTickets', loginTicket, { program: 'WoW' })
+            ]).then(() => {
                 challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
+                return Promise.resolve(0);
             });
-
-            return Promise.resolve(0);
         });
 
         this.registerHandler('VerifyWebCredentials', (context) => {
@@ -34,20 +36,18 @@ module.exports = class AuthenticationService extends Service {
             let authenticationListener = new AuthenticationListener(context);
 
             if (loginTicket.length) {
-                new Promise((resolve, reject) => {
-                    global.etcd.get('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/accountId', (err, result) => {
-                        if (err) {
-                            reject(err);
-                        }
-
-                        resolve(result.node.value);
-                    });
-                }).then((accountId) => {
-                    return models.Account.find({ include: [{model: models.GameAccount, as: 'gameAccounts'}], where: { id: accountId }});
+                return global.aerospike.operate(this.serviceKey, [
+                    Aerospike.maps.getByKey('loginTickets', loginTicket, Aerospike.maps.returnType.VALUE)
+                ]).then((record) => {
+                    return models.Account.find(
+                        { include: [ { model: models.GameAccount, as: 'gameAccounts'} ],
+                            where: { id: record.bins.loginTickets.accountId }});
                 }).then((account) => {
-                    global.etcd.get('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program', (err, result) => {
+                    global.aerospike.operate(this.serviceKey, [
+                        Aerospike.maps.getByKey('loginTickets', loginTicket, Aerospike.maps.returnType.VALUE)
+                    ], (err, record) => {
                         let usableGameAccounts = account.gameAccounts.filter((gameAccount) => {
-                            return gameAccount.program === result.node.value;
+                            return gameAccount.program === record.bins.loginTickets.program;
                         });
 
                         if(usableGameAccounts.length) {
@@ -56,13 +56,13 @@ module.exports = class AuthenticationService extends Service {
                         else {
                             authenticationListener.OnLogonComplete(12); //ERROR_NO_GAME_ACCOUNT
                         }
+
+                        return Promise.resolve(0);
                     });
                 }).catch((error) => {
                     global.logger.error(error);
                     authenticationListener.OnLogonComplete(4); //ERROR_NOT_EXISTS
                 });
-
-                return Promise.resolve(0);
             }
             else {
                 return Promise.reject(0x0000000A);

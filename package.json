@@ -9,6 +9,7 @@
     "node": ">=6.0.0"
   },
   "dependencies": {
+    "aerospike": "^3.5.0",
     "amqplib": "^0.5.2",
     "app-root": "^3.0.0",
     "bcrypt": "^3.0.0",
@@ -21,7 +22,6 @@
     "mongoose": "^4.13.11",
     "mongoose-long": "^0.1.0",
     "mysql2": "^1.6.1",
-    "node-etcd": "^5.1.0",
     "protobufjs": "^6.8.8",
     "querystring": "^0.2.0",
     "sequelize": "^4.38.0",

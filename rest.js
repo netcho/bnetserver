@@ -1,7 +1,7 @@
-const crypto = require('crypto');
 const bcrypt = require('bcrypt');
 const express = require('express');
 const bodyParser = require('body-parser');
+const Aerospike = require('aerospike');
 const models = require('./models');
 
 const rest = express();
@@ -46,22 +46,34 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
 
     let loginResult = {};
 
-    loginResult.authentication_state = "DONE";
-
     models.Account.findOne({where: {email: username}}).then((account) => {
         if (account){
-            if(bcrypt.compareSync(password, account.hash)) {
+            if(bcrypt.compareSync(password, account.hash) && req.params.hasOwnProperty('loginTicket')) {
+                let authenticationServiceKey = new Aerospike.Key('aurora', 'services', 'AuthenticationService');
+
                 loginResult.login_ticket = req.params.loginTicket;
-                global.etcd.set('/aurora/services/AuthenticationService/loginTickets/' + req.params.loginTicket + '/accountId', account.id);
+                return global.aerospike.operate(authenticationServiceKey, [
+                    Aerospike.maps.getByKey('loginTickets', req.params.loginTicket, Aerospike.maps.returnType.VALUE)
+                ]).then((record) => {
+                    let loginTicketInfo = record.bins.loginTickets;
+                    loginTicketInfo.accountId = account.id;
+                    return global.aerospike.operate(authenticationServiceKey, [
+                        Aerospike.maps.put('loginTickets', req.params.loginTicket, loginTicketInfo)
+                    ]);
+                }).then(() => {
+                    return Promise.resolve('DONE');
+                });
             }else{
                 global.logger.info('Invalid password for account: ' + username);
-                loginResult.authentication_state = "LOGIN";
+                return Promise.resolve('LOGIN');
             }
         }
         else {
             global.logger.debug('No account found: ' + username);
-            loginResult.authentication_state = "LOGIN";
+            return Promise.resolve('LOGIN');
         }
+    }).then((state) => {
+        loginResult.authentication_state = state;
         res.json(loginResult);
     });
 });

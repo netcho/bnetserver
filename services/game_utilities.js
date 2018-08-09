@@ -1,29 +1,24 @@
-/**
- * Created by kaloyan on 23.7.2016 г..
- */
 const crypto = require('crypto');
 const zlib = require('zlib');
-const mongoose = require('mongoose');
-mongoose.Promise = global.Promise;
-const ByteBuffer = require('bytebuffer');
-const adler32 = require('adler32-umd');
-const Service = require('../service.js');
-const realmSchema = require('../models/realm.js').Schema;
-const characterSchema = require('../models/character').Schema;
-const realm = global.connection.model('Realm', realmSchema);
-const character = global.connection.model('Character', characterSchema);
+const protobuf = require('protobufjs');
+const Aerospike = require('aerospike');
 
-const Attribute = global.builder.build("bgs.protocol.Attribute");
-const Variant = global.builder.build("bgs.protocol.Variant");
+const Service = require('./service.js');
 
-function GetJSON(param, name){
-    let string = param.blob_value.readCString();
-    return JSON.parse(string.replace(name+":", ""));
+const gameUtilitiesTypes = protobuf.loadSync('proto/bnet/game_utilities_types.proto');
+
+const Attribute = gameUtilitiesTypes.lookupType('.bgs.protocol.Attribute');
+const Variant = gameUtilitiesTypes.lookupType('.bgs.protocol.Variant');
+
+const models = require('../models');
+
+function GetJSON(variant, name) {
+    let string = variant.blobValue.toString();
+    return JSON.parse(string.slice(name.length + 1, string.length - 1));
 }
 
 function SetJSON(name, object) {
-    var string = name + ":" + JSON.stringify(object);
-    return string;
+    return name + ": " + JSON.stringify(object);
 }
 
 function compress(input, callback) {
@@ -47,157 +42,115 @@ function realmAddressToString(address) {
     return `${region}-${subRegionId}-${realmId}`;
 }
 
-module.exports = class GameUtilitiesService extends Service{
-    constructor(socket){
-        super("GameUtilitiesService", socket, "game_utilities");
-        this.serviceHash = 0x3FC1274D;
+module.exports = class GameUtilitiesService extends Service {
+    constructor() {
+        super('GameUtilitiesService', 'proto/bnet/game_utilities_service.proto');
 
-        const _socket = socket;
+        this.commandHandlers = {};
 
-        this.registerHandler("ProcessClientRequest", function(request, response, token, send){
-            var command = null;
-            var commandValue = null;
-            var params = {};
-            response.attribute = [];
+        this.registerHandler('ProcessClientRequest', (context) => {
+            let command = {
+                name: '',
+                value: null,
+                version: '',
+                auroraVersion: ''
+            };
 
-            request.attribute.forEach(function (attribute) {
-                if (attribute.name.includes("Command_")) {
-                    command = attribute.name.substring(String("Command_").length);
-                    commandValue = attribute.value;
-                }
+            let params = {};
 
+            for (let i = 0; i < context.request.attribute.length; i++) {
+                let attribute = context.request.attribute[i];
 
-                if(attribute.name.includes("Param_")){
-                    params[attribute.name.substring(String("Param_").length)] = attribute.value;
-                }
-            });
+                let parts = attribute.name.split('_');
 
-            if (command != null){
-                if (command === "RealmListTicketRequest_v1_b9"){
-                    const identity = GetJSON(params.Identity, "JSONRealmListTicketIdentity");
-                    const clientInfo = GetJSON(params.ClientInfo, "JSONRealmListTicketClientInformation");
-                    let gameAccount = _socket.account.getGameAccount(identity.gameAccountID, identity.gameAccountRegion);
-
-                    if (gameAccount){
-                        gameAccount.clientSecret = new Buffer(clientInfo.info.secret);
-                        gameAccount.build = clientInfo.info.version.versionBuild;
-                        _socket.gameAccount = gameAccount;
-                        response.add("attribute", new Attribute({ "name": "Param_RealmListTicket",
-                            "value": new Variant({ "blob_value": crypto.randomBytes(20).toString('hex') })}));
-
-                        send(token, response);
-                    } else {
-                        send(token, 0x80000078);
-                    }
-
-                }
-                else if (command === "RealmListRequest_v1_b9"){
-                    const subRegionId = parseInt(commandValue.string_value.split("")[2], 10);
-                    var realmlist = { "updates": [] };
-                    var charactersCount = { "counts": [] };
-
-                    realm.find({"handle.subRegion": subRegionId }).sort({ name: -1 }).exec(function (err, realms){
-                        if (err){
-                            send(token, 0x80000135);
-                            return;
+                switch (parts[0]) {
+                    case 'Command': {
+                        command.name = parts[1];
+                        command.version = parts[2];
+                        command.auroraVersion = parts[3];
+                        if (attribute.value) {
+                            command.value = attribute.value;
                         }
+                        break;
+                    }
+                    case 'Param': {
+                        params[parts[1]] = attribute.value;
+                        break;
+                    }
+                }
+            }
 
-                        realms.forEach(function (realm) {
-                            var state = { "deleting": false };
-                            state.update = { "wowRealmAddress": realm.handle.getAddress(),
-                                             "cfgTimezonesID": realm.timezone,
-                                             "populationState": Math.max(realm.population, 1),
-                                             "cfgCategoriesID": realm.category,
-                                             "version": { "versionMajor": realm.build.major,
-                                                          "versionMinor": realm.build.minor,
-                                                          "versionRevision": realm.build.revision,
-                                                          "versionBuild": realm.build.build },
-                                             "cfgRealmsID": realm.handle.realm,
-                                             "flags": realm.flags,
-                                             "name": realm.name,
-                                             "cfgConfigsID": realm.config,
-                                             "cfgLanguagesID": realm.language };
+            return this.handleCommand(command, params).then((attributes) => {
+                context.response.attribute = attributes;
+                return Promise.resolve(0);
+            });
+        });
 
-                            realmlist.updates.push(state);
+        this.registerHandler('GetAllValuesForAttribute', (context) => {
+            switch (context.request.attributeKey) {
+                case 'Command_RealmListRequest_v1_b9': {
+                    const subRegions = ['3-101-89', '3-35-65'];
 
-                            character.count({ "handle.subRegion": realm.handle.subRegion,
-                                              "handle.realm": realm.handle.realm,
-                                              "gameAccountId.high": _socket.gameAccount.entityId.high,
-                                              "gameAccountId.low": _socket.gameAccount.entityId.low }).
-                                      exec(function (err, characters) {
-                                            var countEntry = { "wowRealmAddress": realm.handle.getAddress(), "count": characters };
-                                            charactersCount.counts.push(countEntry);
-                            });
-                        });
-
-                        compress(SetJSON("JSONRealmListUpdates", realmlist), function(err, realmListCompressed){
-                            if (err){
-                                send(token, 0x800000C8);
-                                return;
-                            }
-
-                            response.add("attribute", new Attribute({ "name": "Param_RealmList",
-                                                                      "value": new Variant({ "blob_value": realmListCompressed })}));
-
-                            compress(SetJSON("JSONRealmCharacterCountList", charactersCount), function(err, characterCountCompressed){
-                                if (err){
-                                    send(token, 0x800000C8);
-                                    return;
-                                }
-
-                                response.add("attribute", new Attribute({ "name": "Param_CharacterCountList",
-                                                                          "value": new Variant({ "blob_value": characterCountCompressed })}));
-
-                                send(token, response);
-                            });
-                        });
+                    subRegions.forEach((subRegion) => {
+                        let variant = Variant.create();
+                        variant.stringValue = subRegion;
+                        context.response.attributeValue.push(variant);
                     });
+                    return Promise.resolve(0);
                 }
-                else if (command === "LastCharPlayedRequest_v1_b9"){
-                    send(token, 0x80000069);
-                }
-                else if (command === "RealmJoinRequest_v1_b9"){
-                    const realmAddress = realmAddressToString(params.RealmAddress);
-                    global.redisConnection.get(`${realmAddress}-server-address`, function (err, serverAddress) {
-                        compress(SetJSON("JSONRealmListServerIPAddresses", serverAddress), function (err, serverAddressesCompressed) {
-
-                            const JoinTicket = crypto.randomBytes(20).toString('hex');
-                            const JoinSecret = crypto.randomBytes(32).toString('hex');
-
-                            global.redisConnection.hset(`${realmAddress}-join-tickets`, JoinTicket, JoinSecret, function(err, res){
-                                response.add("attribute", new Attribute({ "name": "Param_ServerAddresses",
-                                                                          "value": new Variant({ "blob_value": serverAddressesCompressed })}));
-
-                                response.add("attribute", new Attribute({ "name": "Param_RealmJoinTicket",
-                                                                          "value": new Variant({ "blob_value": ByteBuffer.fromHex(JoinTicket) })}));
-
-                                response.add("attribute", new Attribute({ "name": "Param_JoinSecret",
-                                                                          "value": new Variant({ "blob_value": ByteBuffer.fromHex(JoinSecret) })}));
-
-                                send(token, response);
-                            });
-                        });
-                    });
-                }
-                else {
-                    console.log(command);
-                    console.log(params);
+                default: {
+                    return Promise.resolve(0x00000BC7);
                 }
             }
         });
-        
-        this.registerHandler("GetAllValuesForAttribute", function (request, response, token, send) {
-            if (request.attribute_key === "Command_RealmListRequest_v1_b9"){
-                response.attribute_value = [];
 
-                global.redisConnection.smembers(`${_socket.gameAccount.getRegion()}-subregions`, function (err, subregions) {
-                    subregions.forEach(function (subregion) {
-                       response.add("attribute_value", new Variant({"string_value": subregion}));
-                    });
+        this.registerCommand('RealmListTicketRequest', (params) => {
+            let ticket = crypto.randomBytes(20);
+            let key = new Aerospike.Key(process.env.AEROSPIKE_NAMESPACE, 'realmList', ticket);
 
-                    send(token, response);
+            let identity = GetJSON(params.Identity, 'JSONRealmListTicketIdentity');
+            let clientInfo = GetJSON(params.ClientInfo, 'JSONRealmListTicketClientInformation');
+
+            let bins = {
+                clientSecret: clientInfo.secret,
+                build: clientInfo.build
+            };
+
+            return global.aerospike.put(key, bins).then(() => {
+                let responseParams = {
+                    RealmListTicket: null
+                };
+
+                responseParams.RealmListTicket = Variant.create();
+                responseParams.RealmListTicket.blobValue = ticket;
+
+                return Promise.resolve(responseParams);
+            });
+        });
+    }
+
+    registerCommand(command, handler) {
+        this.commandHandlers[command] = handler;
+    }
+
+    handleCommand(command, params) {
+        if (this.commandHandlers.hasOwnProperty(command.name)) {
+            return this.commandHandlers[command.name](params).then((responseParams) => {
+                let attributes = [];
+                Object.getOwnPropertyNames(responseParams).forEach((responseParamName) => {
+                    let attribute = Attribute.create();
+                    attribute.name = 'Param_' + responseParamName;
+                    attribute.value = responseParams[responseParamName];
+                    attributes.push(attribute);
                 });
-            }
-        });
+
+                return Promise.resolve(attributes);
+            });
+        }
+        else {
+            //reject with unknown command ?
+            global.logger.error('Unknown command: ' + command.name + ' received from client');
+            return Promise.reject(0x000084D3);
+        }
     }
 };

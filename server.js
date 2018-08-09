@@ -6,7 +6,7 @@
 const tls = require('tls');
 const https = require('https');
 const fs = require('fs');
-const etcd = require('node-etcd');
+const Aerospike = require('aerospike');
 const amqplib = require('amqplib');
 const winston = require('winston');
 const models = require('./models');
@@ -14,6 +14,7 @@ const models = require('./models');
 const ServiceReceiver = require('./messaging/receiver');
 const AuthenticationService = require('./services/authentication');
 const AccountService = require('./services/account');
+const GameUtilitiesService = require('./services/game_utilities');
 
 winston.emitErrs = true;
 global.logger = new winston.Logger({
@@ -37,19 +38,31 @@ global.logger = new winston.Logger({
     exitOnError: false
 });
 
-global.etcd = new etcd(process.env.ETCD_URL);
+const aerospikeConfig = {
+    hosts: process.env.AEROSPIKE_HOST,
+    port: 3000,
+    connTimeoutMs: 10000,
+    log: {
+        level: Aerospike.log.INFO
+    }
+};
 
 const Connection = require('./connection');
 const RestAPI = require('./rest');
 
 models.sequelize.sync().then(() => {
     global.logger.debug('Database synced');
+    return Aerospike.connect(new Aerospike.Config(aerospikeConfig));
+}).then((client) => {
+    global.logger.debug('Connected to Aerospike');
+    global.aerospike = client;
     return amqplib.connect(process.env.RABBIT_URL);
 }).then((conn) => {
     global.logger.debug('Connected to RabbitMQ');
     global.amqpConnection = conn;
     new ServiceReceiver(new AuthenticationService());
     new ServiceReceiver(new AccountService());
+    new ServiceReceiver(new GameUtilitiesService());
     return Promise.resolve();
 }).then(() => {
     tls.createServer({
@@ -66,7 +79,8 @@ models.sequelize.sync().then(() => {
         key: fs.readFileSync('certs/server-key.pem'),
         cert: fs.readFileSync('certs/server-cert.pem')
     }, RestAPI).listen(443, () => {
-        global.etcd.set('aurora/services/WebAuthService/base_url', 'https://127.0.0.1:443/bnetserver/login/');
+        let webAuthServiceKey = new Aerospike.Key('aurora', 'services', 'AuthenticationService');
+        global.aerospike.put(webAuthServiceKey, {webAuthUrl: 'https://127.0.0.1:443/bnetserver/login/'});
         global.logger.info('REST Service listening');
     });
 }).catch((error) => {
