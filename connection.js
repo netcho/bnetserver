@@ -4,13 +4,6 @@ const microtime = require('microtime');
 const protobuf = require('protobufjs');
 const ConnectionService = require('./services/connection.js');
 
-const ConnectionState = {
-    New: 0,
-    Connected: 1,
-    Disconnecting: 2,
-    Disconnected: 3
-};
-
 const rootNamespace = protobuf.loadSync('proto/bnet/rpc_types.proto');
 const Header = rootNamespace.lookupType('bgs.protocol.Header');
 const ProcessId = rootNamespace.lookupType('bgs.protocol.ProcessId');
@@ -19,7 +12,6 @@ module.exports = class Connection{
     constructor(socket){
         this.socket = socket;
         this.bindless = false;
-        this.state = ConnectionState.New;
         this.requestToken = 0;
         this.requests = [];
         this.importedServices = {};
@@ -52,8 +44,6 @@ module.exports = class Connection{
                 this.queueName = result.queue;
                 return this.amqpChannel.consume(result.queue, (message) => {
                     if (message.properties.correlationId) {
-                        global.logger.debug('Received request from backend');
-
                         if (message.properties.type !== '.bgs.protocol.NO_RESPONSE') {
                             this.requests[this.requestToken] = message.properties.correlationId;
                         }
@@ -76,10 +66,15 @@ module.exports = class Connection{
                         buffer.writeUInt16BE(headerBuffer.length, 0);
                         headerBuffer.copy(buffer, 2);
                         requestBuffer.copy(buffer, 2+headerBuffer.length);
-                        this.socket.write(buffer);
+
+                        if (!this.socket.destroyed) {
+                            this.socket.write(buffer);
+                        }
                     }
                     else {
-                        this.socket.write(Buffer.from(message.content));
+                        if (!this.socket.destroyed) {
+                            this.socket.write(Buffer.from(message.content));
+                        }
                     }
 
                     this.amqpChannel.ack(message);
@@ -115,8 +110,6 @@ module.exports = class Connection{
 
                 this.setConnectionTimeout();
 
-                this.state = ConnectionState.Connected;
-
                 return Promise.resolve(0);
             });
         });
@@ -124,7 +117,6 @@ module.exports = class Connection{
         this.connectionService.registerHandler('KeepAlive', ()=>{
             global.logger.info('Received KeepAlive on connection');
 
-            clearTimeout(this.keepaliveTimer);
             this.setConnectionTimeout();
 
             return Promise.resolve(0);
@@ -132,7 +124,6 @@ module.exports = class Connection{
 
         this.connectionService.registerHandler('RequestDisconnect', (context) => {
             global.logger.info('Client requested disconnect with code: '+context.request.errorCode);
-            clearTimeout(this.keepaliveTimer);
             this.disconnect();
             return Promise.resolve(0);
         });
@@ -176,7 +167,9 @@ module.exports = class Connection{
                                 response: null
                             };
                             this.connectionService.handleCall(context, data.slice(2+headerSize)).then((buffer)=>{
-                                this.socket.write(buffer);
+                                if (!this.socket.destroyed) {
+                                    this.socket.write(buffer);
+                                }
                             }).catch((error) => {
                                 global.logger.error(error);
                             });
@@ -191,14 +184,20 @@ module.exports = class Connection{
                 }
             }
         });
+
+        this.socket.on('end', () => {
+            this.disconnect();
+        })
     }
 
     disconnect() {
-        //this.amqpChannel.close();
-        this.socket.end();
+        clearTimeout(this.keepaliveTimer);
+        this.amqpChannel.close();
+        this.socket.destroy();
     }
 
     setConnectionTimeout() {
+        clearTimeout(this.keepaliveTimer);
         this.keepaliveTimer = setTimeout(()=>{
             global.logger.info('Closing connection due to exceeded timeout');
             this.disconnect();

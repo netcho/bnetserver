@@ -49,17 +49,13 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
     models.Account.findOne({where: {email: username}}).then((account) => {
         if (account){
             if(bcrypt.compareSync(password, account.hash) && req.params.hasOwnProperty('loginTicket')) {
-                let authenticationServiceKey = new Aerospike.Key('aurora', 'services', 'AuthenticationService');
+                let loginTicketKey = new Aerospike.Key('aurora', 'AuthenticationService', req.params.loginTicket);
 
                 loginResult.login_ticket = req.params.loginTicket;
-                return global.aerospike.operate(authenticationServiceKey, [
-                    Aerospike.maps.getByKey('loginTickets', req.params.loginTicket, Aerospike.maps.returnType.VALUE)
-                ]).then((record) => {
-                    let loginTicketInfo = record.bins.loginTickets;
+                return global.aerospike.get(loginTicketKey).then((record) => {
+                    let loginTicketInfo = record.bins;
                     loginTicketInfo.accountId = account.id;
-                    return global.aerospike.operate(authenticationServiceKey, [
-                        Aerospike.maps.put('loginTickets', req.params.loginTicket, loginTicketInfo)
-                    ]);
+                    return global.aerospike.put(loginTicketKey, loginTicketInfo);
                 }).then(() => {
                     return Promise.resolve('DONE');
                 });

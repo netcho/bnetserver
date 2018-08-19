@@ -5,7 +5,6 @@
 
 const FNV = require('fnv').FNV;
 const protobuf = require('protobufjs');
-const Aerospike = require('aerospike');
 
 const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
 
@@ -24,8 +23,6 @@ module.exports = class Service{
         let hash = new FNV();
         hash.update(service.getOption('(original_fully_qualified_descriptor_name)'));
         this.hash = parseInt(hash.digest('hex'), 16);
-
-        this.serviceKey = new Aerospike.Key('aurora', 'services', this.getServiceName());
     }
 
     getServiceHash() {
@@ -34,10 +31,6 @@ module.exports = class Service{
 
     getServiceName() {
         return this.name;
-    }
-
-    getServiceKey() {
-        return this.serviceKey;
     }
 
     registerHandler(name, handler) {

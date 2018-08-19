@@ -22,9 +22,7 @@ module.exports = class AuthenticationService extends Service {
 
             let challengeListener = new ChallengeListener(context);
 
-            return global.aerospike.operate(this.serviceKey, [
-                Aerospike.maps.put('loginTickets', loginTicket, { program: 'WoW' })
-            ]).then(() => {
+            return global.aerospike.put(new Aerospike.Key('aurora', this.getServiceName(), loginTicket), { program: 'WoW' }).then(() => {
                 challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
                 return Promise.resolve(0);
             });
@@ -32,22 +30,18 @@ module.exports = class AuthenticationService extends Service {
 
         this.registerHandler('VerifyWebCredentials', (context) => {
             let loginTicket = Buffer.from(context.request.webCredentials).toString();
-
+            let loginTicketKey = new Aerospike.Key('aurora', this.getServiceName(), loginTicket);
             let authenticationListener = new AuthenticationListener(context);
 
             if (loginTicket.length) {
-                return global.aerospike.operate(this.serviceKey, [
-                    Aerospike.maps.getByKey('loginTickets', loginTicket, Aerospike.maps.returnType.VALUE)
-                ]).then((record) => {
+                return global.aerospike.get(loginTicketKey).then((record) => {
                     return models.Account.find(
                         { include: [ { model: models.GameAccount, as: 'gameAccounts'} ],
-                            where: { id: record.bins.loginTickets.accountId }});
+                            where: { id: record.bins.accountId }});
                 }).then((account) => {
-                    global.aerospike.operate(this.serviceKey, [
-                        Aerospike.maps.getByKey('loginTickets', loginTicket, Aerospike.maps.returnType.VALUE)
-                    ], (err, record) => {
+                    global.aerospike.get(loginTicketKey, (err, record) => {
                         let usableGameAccounts = account.gameAccounts.filter((gameAccount) => {
-                            return gameAccount.program === record.bins.loginTickets.program;
+                            return gameAccount.program === record.bins.program;
                         });
 
                         if(usableGameAccounts.length) {

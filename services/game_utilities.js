@@ -12,34 +12,43 @@ const Variant = gameUtilitiesTypes.lookupType('.bgs.protocol.Variant');
 
 const models = require('../models');
 
+function readFourCC(fourCCInt) {
+    return  String.fromCharCode((fourCCInt >> 24) & 0xFF) +
+            String.fromCharCode((fourCCInt >> 16) & 0xFF) +
+            String.fromCharCode((fourCCInt >> 8) & 0xFF) +
+            String.fromCharCode(fourCCInt & 0xFF);
+}
+
 function GetJSON(variant, name) {
     let string = variant.blobValue.toString();
     return JSON.parse(string.slice(name.length + 1, string.length - 1));
 }
 
-function SetJSON(name, object) {
-    return name + ": " + JSON.stringify(object);
-}
-
-function compress(input, callback) {
-    const stringSize = Buffer.byteLength(input, "utf8");
-    const string = Buffer.alloc(stringSize + 1);
-    string.write(input, "utf8");
-    string.writeUInt8(0x00, stringSize);
-
-    zlib.deflate(string, {strategy: zlib.Z_BEST_SPEED}, function (err, compressed) {
-        const buffer = new ByteBuffer(4 + compressed.length, ByteBuffer.LITTLE_ENDIAN);
-        buffer.writeUint32(stringSize + 1, 0);
-        buffer.append(compressed.toString('hex'), 'hex', 4);
-        callback(err, buffer);
-    });
+function deflateJSONAttributeValue(name, object) {
+    let string = name + ":" + JSON.stringify(object);
+    let stringBuffer = Buffer.from(string);
+    let CStringBuffer = Buffer.alloc(stringBuffer.length + 1);
+    stringBuffer.copy(CStringBuffer);
+    CStringBuffer.writeUInt8(0, stringBuffer.length);
+    let compressed = zlib.deflateSync(CStringBuffer);
+    let buffer = Buffer.alloc(4 + compressed.length);
+    buffer.writeInt32LE(CStringBuffer.length, 0);
+    compressed.copy(buffer, 4);
+    return buffer;
 }
 
 function realmAddressToString(address) {
-    const realmId = address.and(0xFFFF);
-    const subRegionId = address.and(0xFF0000);
-    const region = address.and(0xFF000000);
-    return `${region}-${subRegionId}-${realmId}`;
+    const realmId = address & 0xFFFF;
+    const battleGroupId = (address >> 16) & 0xFF;
+    const region = (address >> 24) & 0xFF;
+    return region.toString() + '-' + battleGroupId.toString() + '-' + realmId.toString();
+}
+
+function stringToRealmAddress(string) {
+    let parts = string.split('-');
+    return  ((Number.parseInt(parts[0], 10) & 0xFF) << 24) |
+            ((Number.parseInt(parts[1], 10) & 0xFF) << 16) |
+            (Number.parseInt(parts[2], 10) & 0xFF);
 }
 
 module.exports = class GameUtilitiesService extends Service {
@@ -89,14 +98,14 @@ module.exports = class GameUtilitiesService extends Service {
         this.registerHandler('GetAllValuesForAttribute', (context) => {
             switch (context.request.attributeKey) {
                 case 'Command_RealmListRequest_v1_b9': {
-                    const subRegions = ['3-101-89', '3-35-65'];
-
-                    subRegions.forEach((subRegion) => {
-                        let variant = Variant.create();
-                        variant.stringValue = subRegion;
-                        context.response.attributeValue.push(variant);
+                    return global.aerospike.get(new Aerospike.Key('aurora', this.getServiceName(), 'subRegions')).then((record) => {
+                        record.bins.subRegions.forEach((subRegion) => {
+                            let variant = Variant.create();
+                            variant.stringValue = subRegion;
+                            context.response.attributeValue.push(variant);
+                        });
+                        return Promise.resolve(0);
                     });
-                    return Promise.resolve(0);
                 }
                 default: {
                     return Promise.resolve(0x00000BC7);
@@ -105,28 +114,129 @@ module.exports = class GameUtilitiesService extends Service {
         });
 
         this.registerCommand('RealmListTicketRequest', (params) => {
-            let ticket = crypto.randomBytes(20);
-            let key = new Aerospike.Key(process.env.AEROSPIKE_NAMESPACE, 'realmList', ticket);
-
             let identity = GetJSON(params.Identity, 'JSONRealmListTicketIdentity');
             let clientInfo = GetJSON(params.ClientInfo, 'JSONRealmListTicketClientInformation');
 
-            let bins = {
-                clientSecret: clientInfo.secret,
-                build: clientInfo.build
+            let listTicket = crypto.randomBytes(20);
+            let listTicketInfo = {
+                audioLocale: readFourCC(clientInfo.info.audioLocale),
+                textLocale: readFourCC(clientInfo.info.textLocale),
+                clientSecret: clientInfo.info.secret.toString(),
+                version: clientInfo.info.version,
+                dataBuild: clientInfo.info.versionDataBuild,
+                gameAccount: identity.gameAccountID
             };
+            let listTicketKey = new Aerospike.Key('aurora', this.getServiceName(), listTicket.toString('hex'));
 
-            return global.aerospike.put(key, bins).then(() => {
+            global.logger.debug('Created RealmListRequest with listTicket: ' + listTicket.toString('hex'));
+
+            return global.aerospike.put(listTicketKey, listTicketInfo).then(() => {
                 let responseParams = {
                     RealmListTicket: null
                 };
 
                 responseParams.RealmListTicket = Variant.create();
-                responseParams.RealmListTicket.blobValue = ticket;
+                responseParams.RealmListTicket.blobValue = listTicket;
 
                 return Promise.resolve(responseParams);
             });
         });
+
+        this.registerCommand('RealmListRequest', (params, commandValue) => {
+            let listTicket = params.RealmListTicket.blobValue.toString('hex');
+            let listTicketKey = new Aerospike.Key('aurora', this.getServiceName(), listTicket);
+            let subRegion = commandValue.stringValue;
+
+            global.logger.debug('Received RealmListRequest with listTicket: ' + listTicket);
+
+            return global.aerospike.get(listTicketKey).then((record) => {
+                let listTicketInfo = record.bins;
+
+                return new Promise((resolve, reject) => {
+                    let responseParams = {
+                        RealmList: null,
+                        CharacterCountList: null
+                    };
+
+                    // TODO create secondary index on subRegion
+                    let realmQuery = global.aerospike.query('aurora', 'realmlist');
+                    //realmQuery.where(Aerospike.filter.equal('subRegion', subRegion));
+
+                    let realmListUpdates = [];
+                    let characterCounts = [];
+
+                    let stream = realmQuery.foreach();
+                    stream.on('data', (realmRecord) => {
+                        global.logger.debug('Sending realm ' + realmRecord.bins.name + ' with addresss: ' + stringToRealmAddress(realmRecord.key.key));
+                        // TODO implement more checks to set flags based on locale and language
+                        let realm = {
+                            update: realmRecord.bins.config,
+                            deleting: realmRecord.bins.deleting
+                        };
+
+                        realm.update.wowRealmAddress = stringToRealmAddress(realmRecord.key.key);
+                        realm.update.name = realmRecord.bins.name;
+                        realm.update.version = realmRecord.bins.version;
+                        realm.update.populationState = 2; // TODO implement a function which calculates the population
+                        realm.update.flags = 0;
+
+
+                        realmListUpdates.push(realm);
+
+                        let count = {
+                            wowRealmAddress: stringToRealmAddress(realmRecord.key.key),
+                            count: 0
+                        };
+
+                        characterCounts.push(count);
+                    });
+                    stream.on('end', () => {
+                        responseParams.RealmList = Variant.create();
+                        responseParams.RealmList.blobValue = deflateJSONAttributeValue('JSONRealmListUpdates', {updates: realmListUpdates});
+                        responseParams.CharacterCountList = Variant.create();
+                        responseParams.CharacterCountList.blobValue = deflateJSONAttributeValue('JSONRealmCharacterCountList', {counts: characterCounts});
+                        resolve(responseParams);
+                    });
+                });
+            });
+        });
+
+        this.registerCommand('RealmJoinRequest', (params, commandValue) => {
+            let subRegion = commandValue.stringValue;
+            let listTicket = params.RealmListTicket.blobValue.toString('hex');
+            let listTicketKey = new Aerospike.Key('aurora', this.getServiceName(), listTicket);
+            let realmAddress = realmAddressToString(params.RealmAddress.uintValue.getLowBitsUnsigned());
+            let realmKey = new Aerospike.Key('aurora', 'realmlist', realmAddress);
+
+            global.logger.debug('Received RealmJoinRequest for realm: ' + realmAddress);
+
+            let responseParams = {
+                ServerAddresses: Variant.create(),
+                RealmJoinTicket: Variant.create(),
+                JoinSecret: Variant.create()
+            };
+
+            return global.aerospike.get(realmKey).then((realmRecord) => {
+                responseParams.ServerAddresses.blobValue = deflateJSONAttributeValue('JSONRealmListServerIPAddresses',
+                    { families: realmRecord.bins.families});
+
+                return global.aerospike.get(listTicketKey);
+            }).then((listTicketRecord) => {
+                responseParams.RealmJoinTicket.blobValue = crypto.randomBytes(20);
+                responseParams.JoinSecret.blobValue = crypto.randomBytes(32);
+
+                let joinTicket = {
+                    clientSecret: listTicketRecord.bins.clientSecret,
+                    serverSecret: responseParams.JoinSecret.toString('hex')
+                };
+
+                let joinKeyTicket = new Aerospike.Key('aurora', 'WoWService', responseParams.RealmJoinTicket.toString('hex'));
+
+                return global.aerospike.put(joinKeyTicket, joinTicket);
+            }).then(() => {
+                return Promise.resolve(responseParams);
+            });
+        })
     }
 
     registerCommand(command, handler) {
@@ -135,7 +245,7 @@ module.exports = class GameUtilitiesService extends Service {
 
     handleCommand(command, params) {
         if (this.commandHandlers.hasOwnProperty(command.name)) {
-            return this.commandHandlers[command.name](params).then((responseParams) => {
+            return this.commandHandlers[command.name](params, command.value).then((responseParams) => {
                 let attributes = [];
                 Object.getOwnPropertyNames(responseParams).forEach((responseParamName) => {
                     let attribute = Attribute.create();
@@ -145,6 +255,9 @@ module.exports = class GameUtilitiesService extends Service {
                 });
 
                 return Promise.resolve(attributes);
+            }, (error) => {
+                global.logger.error('Error in command: ' + command.name);
+                global.logger.error(error);
             });
         }
         else {
