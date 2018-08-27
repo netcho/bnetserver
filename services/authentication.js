@@ -4,7 +4,6 @@
 'use strict';
 
 const crypto = require('crypto');
-const Aerospike = require('aerospike');
 
 const Service = require('./service');
 const ChallengeListener = require('../listeners/challenge');
@@ -22,40 +21,51 @@ module.exports = class AuthenticationService extends Service {
 
             let challengeListener = new ChallengeListener(context);
 
-            return global.aerospike.put(new Aerospike.Key('aurora', this.getServiceName(), loginTicket), { program: 'WoW' }).then(() => {
-                challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
-                return Promise.resolve(0);
+            return new Promise((resolve, reject) => {
+                global.etcd.set('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program',
+                    context.request.program, (err) => {
+                        if (err) {
+                            reject(0x1);
+                        }
+
+                        resolve(0);
+                        challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
+                    });
             });
         });
 
         this.registerHandler('VerifyWebCredentials', (context) => {
             let loginTicket = Buffer.from(context.request.webCredentials).toString();
-            let loginTicketKey = new Aerospike.Key('aurora', this.getServiceName(), loginTicket);
             let authenticationListener = new AuthenticationListener(context);
 
             if (loginTicket.length) {
-                return global.aerospike.get(loginTicketKey).then((record) => {
-                    return models.Account.find(
-                        { include: [ { model: models.GameAccount, as: 'gameAccounts'} ],
-                            where: { id: record.bins.accountId }});
-                }).then((account) => {
-                    global.aerospike.get(loginTicketKey, (err, record) => {
-                        let usableGameAccounts = account.gameAccounts.filter((gameAccount) => {
-                            return gameAccount.program === record.bins.program;
-                        });
-
-                        if(usableGameAccounts.length) {
-                            authenticationListener.OnLogonComplete(0, account, usableGameAccounts); //ERROR_OK
-                        }
-                        else {
-                            authenticationListener.OnLogonComplete(12); //ERROR_NO_GAME_ACCOUNT
+                return new Promise((resolve, reject) => {
+                    global.etcd.get('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/accountId', (err, result) => {
+                        if (err) {
+                            authenticationListener.OnLogonComplete(4); //ERROR_NOT_EXISTS
                         }
 
-                        return Promise.resolve(0);
+                        resolve(result.node.value);
                     });
-                }).catch((error) => {
-                    global.logger.error(error);
-                    authenticationListener.OnLogonComplete(4); //ERROR_NOT_EXISTS
+                }).then((accountId) => {
+                    return models.Account.find(
+                        { include: [ { model: models.GameAccount, as: 'gameAccounts'} ], where: { id: accountId }});
+                }).then((account) => {
+                    return new Promise((resolve) => {
+                        global.etcd.get('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program', (err, result) => {
+                            if (err) {
+                                authenticationListener.OnLogonComplete(12); //ERROR_NO_GAME_ACCOUNT
+                            }
+
+                            let usableGameAccounts = account.gameAccounts.filter((gameAccount) => {
+                                return gameAccount.program === result.node.value;
+                            });
+
+                            authenticationListener.OnLogonComplete(0, account, usableGameAccounts); //ERROR_OK
+
+                            resolve(0);
+                        });
+                    });
                 });
             }
             else {

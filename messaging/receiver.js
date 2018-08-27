@@ -1,7 +1,6 @@
 'use strict';
 
 const protobuf = require('protobufjs');
-const Aerospike = require('aerospike');
 
 const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
 
@@ -19,7 +18,7 @@ module.exports = class Receiver{
             this.amqpChannel.bindQueue(result.queue, 'battlenet_aurora_bus', service.getServiceHash().toString());
             return Promise.resolve(result.queue);
         }).then((queueName) => {
-            global.aerospike.put(new Aerospike.Key('aurora', 'services', service.getServiceName()), {hash: service.getServiceHash()});
+            global.etcd.set('/aurora/services/' + service.getServiceName() + '/hash', service.getServiceHash());
             global.logger.info(service.getServiceName()+' listening');
             this.amqpChannel.consume(queueName, (message) => {
                 let context = {

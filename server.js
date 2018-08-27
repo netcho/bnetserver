@@ -6,7 +6,7 @@
 const tls = require('tls');
 const https = require('https');
 const fs = require('fs');
-const Aerospike = require('aerospike');
+const Etcd = require('node-etcd');
 const amqplib = require('amqplib');
 const winston = require('winston');
 const models = require('./models');
@@ -38,24 +38,23 @@ global.logger = new winston.Logger({
     exitOnError: false
 });
 
-const aerospikeConfig = {
-    hosts: process.env.AEROSPIKE_HOST,
-    port: 3000,
-    connTimeoutMs: 10000,
-    log: {
-        level: Aerospike.log.INFO
-    }
-};
-
 const Connection = require('./connection');
 const RestAPI = require('./rest');
 
 models.sequelize.sync().then(() => {
     global.logger.debug('Database synced');
-    return Aerospike.connect(new Aerospike.Config(aerospikeConfig));
-}).then((client) => {
-    global.logger.debug('Connected to Aerospike');
-    global.aerospike = client;
+    global.etcd = new Etcd(process.env.ETCD_URL);
+    return new Promise((resolve, reject) => {
+        global.etcd.mkdir('aurora/services', { prevExist: true }, function (err, result) {
+            if (err) {
+                reject(err);
+            }
+
+            resolve(result);
+        })
+    });
+}).then((result) => {
+    global.logger.debug('Connected to etcd');
     return amqplib.connect(process.env.RABBIT_URL);
 }).then((conn) => {
     global.logger.debug('Connected to RabbitMQ');
@@ -79,8 +78,7 @@ models.sequelize.sync().then(() => {
         key: fs.readFileSync('certs/server-key.pem'),
         cert: fs.readFileSync('certs/server-cert.pem')
     }, RestAPI).listen(443, () => {
-        let webAuthServiceKey = new Aerospike.Key('aurora', 'services', 'AuthenticationService');
-        global.aerospike.put(webAuthServiceKey, {webAuthUrl: 'https://127.0.0.1:443/bnetserver/login/'});
+        global.etcd.set('/aurora/services/AuthenticationService/WebAuthUrl', 'https://127.0.0.1:443/bnetserver/login/');
         global.logger.info('REST Service listening');
     });
 }).catch((error) => {

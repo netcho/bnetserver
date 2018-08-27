@@ -1,7 +1,6 @@
 const crypto = require('crypto');
 const zlib = require('zlib');
 const protobuf = require('protobufjs');
-const Aerospike = require('aerospike');
 
 const Service = require('./service.js');
 
@@ -98,13 +97,20 @@ module.exports = class GameUtilitiesService extends Service {
         this.registerHandler('GetAllValuesForAttribute', (context) => {
             switch (context.request.attributeKey) {
                 case 'Command_RealmListRequest_v1_b9': {
-                    return global.aerospike.get(new Aerospike.Key('aurora', this.getServiceName(), 'subRegions')).then((record) => {
-                        record.bins.subRegions.forEach((subRegion) => {
-                            let variant = Variant.create();
-                            variant.stringValue = subRegion;
-                            context.response.attributeValue.push(variant);
+                    return new Promise((resolve, reject) => {
+                        global.etcd.get('aurora/services/WoWService/subRegions', (err, result) => {
+                            if (err) {
+                                reject(0x8000006D); //ERROR_UTIL_SERVER_MISSING_REALM_LIST
+                            }
+
+                            result.node.nodes.forEach((node) => {
+                                let variant = Variant.create();
+                                variant.stringValue = node.key.split('/').pop();
+                                context.response.attributeValue.push(variant);
+                            });
+
+                            resolve(0);
                         });
-                        return Promise.resolve(0);
                     });
                 }
                 default: {
@@ -118,95 +124,91 @@ module.exports = class GameUtilitiesService extends Service {
             let clientInfo = GetJSON(params.ClientInfo, 'JSONRealmListTicketClientInformation');
 
             let listTicket = crypto.randomBytes(20);
+
             let listTicketInfo = {
-                audioLocale: readFourCC(clientInfo.info.audioLocale),
-                textLocale: readFourCC(clientInfo.info.textLocale),
-                clientSecret: clientInfo.info.secret.toString(),
-                version: clientInfo.info.version,
-                dataBuild: clientInfo.info.versionDataBuild,
-                gameAccount: identity.gameAccountID
+                info: clientInfo.info,
+                identity: identity
             };
-            let listTicketKey = new Aerospike.Key('aurora', this.getServiceName(), listTicket.toString('hex'));
 
             global.logger.debug('Created RealmListRequest with listTicket: ' + listTicket.toString('hex'));
 
-            return global.aerospike.put(listTicketKey, listTicketInfo).then(() => {
-                let responseParams = {
-                    RealmListTicket: null
-                };
+            return new Promise((resolve, reject) => {
+                global.etcd.set('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket.toString('hex'), JSON.stringify(listTicketInfo), { ttl: 120 }, (err) => {
+                    if (err) {
+                        reject(0x80000076) //ERROR_UTIL_SERVER_UNABLE_TO_GENERATE_REALM_LIST_TICKET
+                    }
 
-                responseParams.RealmListTicket = Variant.create();
-                responseParams.RealmListTicket.blobValue = listTicket;
+                    let responseParams = {
+                        RealmListTicket: null
+                    };
 
-                return Promise.resolve(responseParams);
+                    responseParams.RealmListTicket = Variant.create();
+                    responseParams.RealmListTicket.blobValue = listTicket;
+
+                    resolve(responseParams);
+                })
             });
         });
 
         this.registerCommand('RealmListRequest', (params, commandValue) => {
             let listTicket = params.RealmListTicket.blobValue.toString('hex');
-            let listTicketKey = new Aerospike.Key('aurora', this.getServiceName(), listTicket);
             let subRegion = commandValue.stringValue;
 
             global.logger.debug('Received RealmListRequest with listTicket: ' + listTicket);
 
-            return global.aerospike.get(listTicketKey).then((record) => {
-                let listTicketInfo = record.bins;
+            return new Promise((resolve, reject) => {
+                global.etcd.get('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket, (err, result) => {
+                    if (err) {
+                        reject(0x8000012D); //ERROR_WOW_SERVICES_INVALID_REALM_LIST_TICKET
+                    }
 
+                    resolve(JSON.parse(result.node.value));
+                });
+            }).then((listTicketInfo) => {
                 return new Promise((resolve, reject) => {
-                    let responseParams = {
-                        RealmList: null,
-                        CharacterCountList: null
-                    };
+                    global.etcd.get('/aurora/services/WoWService/subRegions/' + subRegion + '/realms', { recursive: true }, (err, result) => {
+                        if (err) {
+                            reject(0x8000006D); //ERROR_UTIL_SERVER_MISSING_REALM_LIST
+                        }
 
-                    // TODO create secondary index on subRegion
-                    let realmQuery = global.aerospike.query('aurora', 'realmlist');
-                    //realmQuery.where(Aerospike.filter.equal('subRegion', subRegion));
-
-                    let realmListUpdates = [];
-                    let characterCounts = [];
-
-                    let stream = realmQuery.foreach();
-                    stream.on('data', (realmRecord) => {
-                        global.logger.debug('Sending realm ' + realmRecord.bins.name + ' with addresss: ' + stringToRealmAddress(realmRecord.key.key));
-                        // TODO implement more checks to set flags based on locale and language
-                        let realm = {
-                            update: realmRecord.bins.config,
-                            deleting: realmRecord.bins.deleting
+                        let responseParams = {
+                            RealmList: Variant.create(),
+                            CharacterCountList: Variant.create()
                         };
 
-                        realm.update.wowRealmAddress = stringToRealmAddress(realmRecord.key.key);
-                        realm.update.name = realmRecord.bins.name;
-                        realm.update.version = realmRecord.bins.version;
-                        realm.update.populationState = 2; // TODO implement a function which calculates the population
-                        realm.update.flags = 0;
+                        let realmListUpdates = [];
+                        let characterCounts = [];
 
+                        result.node.nodes.forEach((node) => {
+                            let realmEntry = JSON.parse(node.value);
 
-                        realmListUpdates.push(realm);
+                            //TODO set recommended for the same locale, check for build compatability (flags etc.)
+                            realmEntry.update.wowRealmAddress = stringToRealmAddress(node.key.split('/').pop());
+                            realmEntry.update.populationState = 1;
+                            realmEntry.update.flags = 0;
 
-                        let count = {
-                            wowRealmAddress: stringToRealmAddress(realmRecord.key.key),
-                            count: 0
-                        };
+                            realmListUpdates.push(realmEntry);
 
-                        characterCounts.push(count);
-                    });
-                    stream.on('end', () => {
-                        responseParams.RealmList = Variant.create();
+                            let count = {
+                                wowRealmAddress: realmEntry.update.wowRealmAddress,
+                                count: 0
+                            };
+
+                            characterCounts.push(count);
+                        });
+
                         responseParams.RealmList.blobValue = deflateJSONAttributeValue('JSONRealmListUpdates', {updates: realmListUpdates});
-                        responseParams.CharacterCountList = Variant.create();
                         responseParams.CharacterCountList.blobValue = deflateJSONAttributeValue('JSONRealmCharacterCountList', {counts: characterCounts});
                         resolve(responseParams);
                     });
-                });
+                })
             });
         });
 
         this.registerCommand('RealmJoinRequest', (params, commandValue) => {
             let subRegion = commandValue.stringValue;
             let listTicket = params.RealmListTicket.blobValue.toString('hex');
-            let listTicketKey = new Aerospike.Key('aurora', this.getServiceName(), listTicket);
             let realmAddress = realmAddressToString(params.RealmAddress.uintValue.getLowBitsUnsigned());
-            let realmKey = new Aerospike.Key('aurora', 'realmlist', realmAddress);
 
             global.logger.debug('Received RealmJoinRequest for realm: ' + realmAddress);
 
@@ -216,25 +218,49 @@ module.exports = class GameUtilitiesService extends Service {
                 JoinSecret: Variant.create()
             };
 
-            return global.aerospike.get(realmKey).then((realmRecord) => {
-                responseParams.ServerAddresses.blobValue = deflateJSONAttributeValue('JSONRealmListServerIPAddresses',
-                    { families: realmRecord.bins.families});
+            return new Promise((resolve, reject) => {
+                global.etcd.get('aurora/services/WoWService/subRegion/' + subRegion + '/realms/' + realmAddress + '/families', (err, result) => {
+                    if (err) {
+                        reject(0x80000071) //ERROR_UTIL_SERVER_INVALID_VIRTUAL_REALM
+                    }
 
-                return global.aerospike.get(listTicketKey);
-            }).then((listTicketRecord) => {
+                    //let realmEntry = JSON.parse(result.node.value);
+
+                    //if(!realmEntry.hasOwnProperty('families')) {
+                    //    reject(0x80000131) //ERROR_WOW_SERVICES_NO_REALM_JOIN_IP_FOUND
+                    //}
+
+                    responseParams.ServerAddresses.blobValue = deflateJSONAttributeValue('JSONRealmListServerIPAddresses',
+                        { families: JSON.parse(result.node.value)});
+
+                    resolve();
+                })
+            }).then(() => {
+                global.etcd.get('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket, (err, result) => {
+                    if (err) {
+                        return Promise.reject(0x8000012D); //ERROR_WOW_SERVICES_INVALID_REALM_LIST_TICKET
+                    }
+
+                    return Promise.resolve(JSON.parse(result.node.value))
+                });
+            }).then((listTicketInfo) => {
                 responseParams.RealmJoinTicket.blobValue = crypto.randomBytes(20);
                 responseParams.JoinSecret.blobValue = crypto.randomBytes(32);
 
-                let joinTicket = {
-                    clientSecret: listTicketRecord.bins.clientSecret,
-                    serverSecret: responseParams.JoinSecret.toString('hex')
+                let joinTicketInfo = {
+                    clientSecret: listTicketInfo.info.secret.toString('hex'),
+                    joinSecret: responseParams.JoinSecret.toString('hex')
                 };
 
-                let joinKeyTicket = new Aerospike.Key('aurora', 'WoWService', responseParams.RealmJoinTicket.toString('hex'));
+                return new Promise((resolve, reject) => {
+                    global.etcd.set('aurora/services/' + this.getServiceName() + '/realmJoinTickets/' + responseParams.RealmJoinTicket.toString('hex'), JSON.stringify(joinTicketInfo), { ttl: 120 }, (err) => {
+                        if (err) {
+                            reject(0x80000075) //ERROR_UTIL_SERVER_UNABLE_TO_GENERATE_JOIN_TICKET
+                        }
 
-                return global.aerospike.put(joinKeyTicket, joinTicket);
-            }).then(() => {
-                return Promise.resolve(responseParams);
+                        resolve(responseParams);
+                    });
+                });
             });
         })
     }
@@ -256,8 +282,8 @@ module.exports = class GameUtilitiesService extends Service {
 
                 return Promise.resolve(attributes);
             }, (error) => {
-                global.logger.error('Error in command: ' + command.name);
-                global.logger.error(error);
+                global.logger.error('Error: '+ error + ' in command: ' + command.name);
+                return Promise.reject(error);
             });
         }
         else {

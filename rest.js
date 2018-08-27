@@ -49,15 +49,15 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
     models.Account.findOne({where: {email: username}}).then((account) => {
         if (account){
             if(bcrypt.compareSync(password, account.hash) && req.params.hasOwnProperty('loginTicket')) {
-                let loginTicketKey = new Aerospike.Key('aurora', 'AuthenticationService', req.params.loginTicket);
+                return new Promise((resolve) => {
+                    global.etcd.set('/aurora/services/AuthenticationService/loginTickets/'+req.params.loginTicket+'/accountId', account.id, { ttl: 120 },(err) => {
+                        if (err) {
+                            return Promise.resolve('LOGIN');
+                        }
 
-                loginResult.login_ticket = req.params.loginTicket;
-                return global.aerospike.get(loginTicketKey).then((record) => {
-                    let loginTicketInfo = record.bins;
-                    loginTicketInfo.accountId = account.id;
-                    return global.aerospike.put(loginTicketKey, loginTicketInfo);
-                }).then(() => {
-                    return Promise.resolve('DONE');
+                        loginResult.login_ticket = req.params.loginTicket;
+                        resolve('DONE');
+                    })
                 });
             }else{
                 global.logger.info('Invalid password for account: ' + username);
