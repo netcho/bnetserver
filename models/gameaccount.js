@@ -13,7 +13,11 @@ module.exports = (sequelize, DataTypes) => {
         displayName: { type: DataTypes.STRING, allowNull: false, field: 'display_name' },
         isBanned: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'banned' },
         isSuspended: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: false, field: 'suspended' },
-        accountId: { type: DataTypes.BIGINT, allowNull: false, field: 'account_id' }
+        accountId: { type: DataTypes.BIGINT, allowNull: false, field: 'account_id' },
+        expansion: { type: DataTypes.TINYINT, allowNull: false, defaultValue: 6 },
+        billingPlan: { type: DataTypes.TINYINT, allowNull: true, defaultValue: 0, field: 'billing_plan' },
+        billingTimeRemaining: { type: DataTypes.INTEGER, allowNull: true, defaultValue: 0, field: 'billing_time_remaining' },
+        tutorialData: { type: DataTypes.BLOB('tiny'), allowNull: true, field: 'tutorial_data' }
         }, {
         getterMethods: {
             entityId() {
