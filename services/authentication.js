@@ -22,15 +22,25 @@ module.exports = class AuthenticationService extends Service {
             let challengeListener = new ChallengeListener(context);
 
             return new Promise((resolve, reject) => {
-                global.etcd.set('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program',
-                    context.request.program, (err) => {
-                        if (err) {
-                            reject(0x1);
-                        }
+                global.etcd.mkdir('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket, { ttl: 180 }, (err) => {
+                    if (err) {
+                        reject(0x0);
+                    }
 
-                        resolve(0);
-                        challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
-                    });
+                    resolve();
+                })
+            }).then(() => {
+               return new Promise((resolve, reject) => {
+                   global.etcd.set('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/program', context.request.program, (err) => {
+                       if (err) {
+                           reject (0);
+                       }
+
+                       challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
+
+                       resolve();
+                   });
+               })
             });
         });
 
@@ -39,7 +49,7 @@ module.exports = class AuthenticationService extends Service {
             let authenticationListener = new AuthenticationListener(context);
 
             if (loginTicket.length) {
-                return new Promise((resolve, reject) => {
+                return new Promise((resolve) => {
                     global.etcd.get('/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket + '/accountId', (err, result) => {
                         if (err) {
                             authenticationListener.OnLogonComplete(4); //ERROR_NOT_EXISTS
@@ -66,6 +76,8 @@ module.exports = class AuthenticationService extends Service {
                             resolve(0);
                         });
                     });
+                }).catch((error) => {
+                    global.logger.error(error);
                 });
             }
             else {

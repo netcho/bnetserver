@@ -50,7 +50,7 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
         if (account){
             if(bcrypt.compareSync(password, account.hash) && req.params.hasOwnProperty('loginTicket')) {
                 return new Promise((resolve) => {
-                    global.etcd.set('/aurora/services/AuthenticationService/loginTickets/'+req.params.loginTicket+'/accountId', account.id, { ttl: 120 },(err) => {
+                    global.etcd.set('/aurora/services/AuthenticationService/loginTickets/' + req.params.loginTicket + '/accountId', account.id, { ttl: 120 },(err) => {
                         if (err) {
                             return Promise.resolve('LOGIN');
                         }
@@ -59,7 +59,8 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
                         resolve('DONE');
                     })
                 });
-            }else{
+            }
+            else {
                 global.logger.info('Invalid password for account: ' + username);
                 return Promise.resolve('LOGIN');
             }

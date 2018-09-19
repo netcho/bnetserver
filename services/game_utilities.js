@@ -9,8 +9,6 @@ const gameUtilitiesTypes = protobuf.loadSync('proto/bnet/game_utilities_types.pr
 const Attribute = gameUtilitiesTypes.lookupType('.bgs.protocol.Attribute');
 const Variant = gameUtilitiesTypes.lookupType('.bgs.protocol.Variant');
 
-const models = require('../models');
-
 function readFourCC(fourCCInt) {
     return  String.fromCharCode((fourCCInt >> 24) & 0xFF) +
             String.fromCharCode((fourCCInt >> 16) & 0xFF) +
@@ -48,6 +46,15 @@ function stringToRealmAddress(string) {
     return  ((Number.parseInt(parts[0], 10) & 0xFF) << 24) |
             ((Number.parseInt(parts[1], 10) & 0xFF) << 16) |
             (Number.parseInt(parts[2], 10) & 0xFF);
+}
+
+function bufferToArray(buffer) {
+    let array = [];
+    for (const value of buffer) {
+        array.push(value);
+    }
+
+    return array;
 }
 
 module.exports = class GameUtilitiesService extends Service {
@@ -179,13 +186,44 @@ module.exports = class GameUtilitiesService extends Service {
                         let realmListUpdates = [];
                         let characterCounts = [];
 
-                        result.node.nodes.forEach((node) => {
-                            let realmEntry = JSON.parse(node.value);
+                        result.node.nodes.forEach((realmNode) => {
+
+                            let realmEntry = {
+                                update: {},
+                                deleting: false
+                            };
+
+                            let realmConfiguration = JSON.parse(realmNode.nodes.find((element) => {
+                                return element.key.includes('configuration');
+                            }).value);
+
+                            realmEntry.update.cfgRealmsID = realmConfiguration.cfgRealmsID;
+                            realmEntry.update.cfgTimezonesID = realmConfiguration.cfgTimezonesID;
+                            realmEntry.update.cfgLanguagesID = realmConfiguration.cfgLanguagesID;
+                            realmEntry.update.cfgCategoriesID = realmConfiguration.cfgCategoriesID;
+                            realmEntry.update.cfgConfigsID = realmConfiguration.cfgConfigsID;
+
+                            realmEntry.update.name = realmNode.nodes.find((element) => {
+                                return element.key.includes('name');
+                            }).value;
 
                             //TODO set recommended for the same locale, check for build compatability (flags etc.)
-                            realmEntry.update.wowRealmAddress = stringToRealmAddress(node.key.split('/').pop());
+                            realmEntry.update.wowRealmAddress = stringToRealmAddress(realmNode.key.split('/').pop());
                             realmEntry.update.populationState = 1;
                             realmEntry.update.flags = 0;
+
+                            realmEntry.update.version = JSON.parse(realmNode.nodes.find((element) => {
+                                return element.key.includes('version');
+                            }).value);
+
+                            if (realmEntry.update.version.versionMajor !== listTicketInfo.info.version.versionMajor ||
+                                realmEntry.update.version.versionMinor !== listTicketInfo.info.version.versionMinor ||
+                                realmEntry.update.version.versionRevision !== listTicketInfo.info.version.versionRevision)
+                                realmEntry.update.flags |= 0x1;
+
+                            realmEntry.deleting = JSON.parse(realmNode.nodes.find((element) => {
+                                return element.key.includes('deleting');
+                            }).value);
 
                             realmListUpdates.push(realmEntry);
 
@@ -219,7 +257,7 @@ module.exports = class GameUtilitiesService extends Service {
             };
 
             return new Promise((resolve, reject) => {
-                global.etcd.get('aurora/services/WoWService/subRegion/' + subRegion + '/realms/' + realmAddress + '/families', (err, result) => {
+                global.etcd.get('aurora/services/WoWService/subRegions/' + subRegion + '/realms/' + realmAddress + '/families', (err, result) => {
                     if (err) {
                         reject(0x80000071) //ERROR_UTIL_SERVER_INVALID_VIRTUAL_REALM
                     }
@@ -236,24 +274,27 @@ module.exports = class GameUtilitiesService extends Service {
                     resolve();
                 })
             }).then(() => {
-                global.etcd.get('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket, (err, result) => {
-                    if (err) {
-                        return Promise.reject(0x8000012D); //ERROR_WOW_SERVICES_INVALID_REALM_LIST_TICKET
-                    }
+                return new Promise((resolve, reject) => {
+                    global.etcd.get('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket, (err, result) => {
+                        if (err) {
+                            reject(0x8000012D); //ERROR_WOW_SERVICES_INVALID_REALM_LIST_TICKET
+                        }
 
-                    return Promise.resolve(JSON.parse(result.node.value))
+                        resolve(JSON.parse(result.node.value));
+                    });
                 });
             }).then((listTicketInfo) => {
                 responseParams.RealmJoinTicket.blobValue = crypto.randomBytes(20);
                 responseParams.JoinSecret.blobValue = crypto.randomBytes(32);
 
                 let joinTicketInfo = {
-                    clientSecret: listTicketInfo.info.secret.toString('hex'),
-                    joinSecret: responseParams.JoinSecret.toString('hex')
+                    clientSecret: listTicketInfo.info.secret,
+                    joinSecret: bufferToArray(responseParams.JoinSecret.blobValue),
+                    gameAccount: listTicketInfo.identity
                 };
 
                 return new Promise((resolve, reject) => {
-                    global.etcd.set('aurora/services/' + this.getServiceName() + '/realmJoinTickets/' + responseParams.RealmJoinTicket.toString('hex'), JSON.stringify(joinTicketInfo), { ttl: 120 }, (err) => {
+                    global.etcd.set('aurora/services/' + this.getServiceName() + '/realmJoinTickets/' + responseParams.RealmJoinTicket.blobValue.toString('hex'), JSON.stringify(joinTicketInfo), { ttl: 180 }, (err) => {
                         if (err) {
                             reject(0x80000075) //ERROR_UTIL_SERVER_UNABLE_TO_GENERATE_JOIN_TICKET
                         }
