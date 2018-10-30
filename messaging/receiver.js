@@ -6,6 +6,7 @@ const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.p
 
 module.exports = class Receiver{
     constructor(service){
+        global.logger.info('Starting ' + service.getServiceName());
         this.amqpChannel = undefined;
         global.amqpConnection.createChannel().then((channel) => {
             this.amqpChannel = channel;
