@@ -1,0 +1,13 @@
+dependencies:
+  - name: rabbitmq
+    version: 3.0.1
+    repository: '@stable'
+    import-values:
+      - child: rabbitmq
+        parent: rabbitmq
+  - name: zookeeper
+    version: 0.3.8
+    repository: '@monasca'
+    import-values:
+      - child: zookeeper
+        parent: zookeeper

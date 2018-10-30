@@ -1,0 +1,9 @@
+dependencies:
+- name: rabbitmq
+  repository: https://kubernetes-charts.storage.googleapis.com
+  version: 3.0.1
+- name: etcd-operator
+  repository: https://kubernetes-charts.storage.googleapis.com
+  version: 0.8.0
+digest: sha256:14b88a3b828cba1129efde62e5a47fae4c58c7b3dc9afaeb2bf5a441fa0b9c49
+generated: 2018-09-23T20:56:30.2016426+03:00
