@@ -3,84 +3,49 @@
  */
 'use strict';
 
-const tls = require('tls');
-const https = require('https');
-const fs = require('fs');
-const Etcd = require('node-etcd');
+const zookeeperClient = require('zookeeper-cluster-client');
 const amqplib = require('amqplib');
 const winston = require('winston');
 const models = require('./models');
 
 const ServiceReceiver = require('./messaging/receiver');
-const AuthenticationService = require('./services/authentication');
-const AccountService = require('./services/account');
-const GameUtilitiesService = require('./services/game_utilities');
+
+const winstonFileTransportConfig = require('./config/winston.json');
+const winstonFileTransport = new winston.transports.File(winstonFileTransportConfig);
+let winstonTransports = [winstonFileTransport];
+
+if (process.env.NODE_ENV === 'development') {
+    const winstonConsoleTransport = new winston.transports.Console({
+        level: 'debug',
+        handleExceptions: true,
+        json: false,
+        colorize: true
+    });
+
+    winstonTransports.push(winstonConsoleTransport);
+}
 
 winston.emitErrs = true;
-global.logger = new winston.Logger({
-    transports: [
-        new winston.transports.File({
-            level: 'info',
-            filename: './logs/all-logs.log',
-            handleExceptions: true,
-            json: true,
-            maxsize: 5242880, //5MB
-            maxFiles: 5,
-            colorize: false
-        }),
-        new winston.transports.Console({
-            level: 'debug',
-            handleExceptions: true,
-            json: false,
-            colorize: true
-        })
-    ],
-    exitOnError: false
-});
-
-const Connection = require('./connection');
-const RestAPI = require('./rest');
+global.logger = new winston.Logger({transports: winstonTransports, exitOnError: false});
 
 models.sequelize.sync().then(() => {
     global.logger.debug('Database synced');
-    global.etcd = new Etcd(process.env.ETCD_URL);
     return new Promise((resolve, reject) => {
-        global.etcd.mkdir('aurora/services', { prevExist: true }, function (err, result) {
-            if (err) {
-                reject(err);
-            }
-
-            resolve(result);
-        })
+        global.zookeeper = zookeeperClient.createClient(process.env.ZOOKEEPER_ADDRESS + ':2181');
+        global.zookeeper.once('connected', () => {
+            resolve();
+        });
+        global.zookeeper.connect();
     });
-}).then((result) => {
-    global.logger.debug('Connected to etcd');
-    return amqplib.connect(process.env.RABBIT_URL);
+}).then(() => {
+    global.logger.debug('Connected to Zookeeper');
+    return amqplib.connect('amqp://' + process.env.RABBITMQ_USERNAME + ':' + process.env.RABBITMQ_PASSWORD + '@' + process.env.RABBITMQ_SERVICE_NAME);
 }).then((conn) => {
     global.logger.debug('Connected to RabbitMQ');
     global.amqpConnection = conn;
-    new ServiceReceiver(new AuthenticationService());
-    new ServiceReceiver(new AccountService());
-    new ServiceReceiver(new GameUtilitiesService());
-    return Promise.resolve();
-}).then(() => {
-    tls.createServer({
-        key: fs.readFileSync('certs/server-key.pem'),
-        cert: fs.readFileSync('certs/server-cert.pem')
-    }, (socket) => {
-        global.logger.debug('Received a new connection from: ' + socket.remoteAddress);
-        new Connection(socket);
-    }).listen(1119, () => {
-        global.logger.info('Listening on port 1119');
-    });
-
-    https.createServer({
-        key: fs.readFileSync('certs/server-key.pem'),
-        cert: fs.readFileSync('certs/server-cert.pem')
-    }, RestAPI).listen(443, () => {
-        global.etcd.set('/aurora/services/AuthenticationService/WebAuthUrl', 'https://127.0.0.1:443/bnetserver/login/');
-        global.logger.info('REST Service listening');
-    });
+    const ServiceName = process.argv[2];
+    const Service = require('./services/' + ServiceName);
+    new ServiceReceiver(new Service());
 }).catch((error) => {
     global.logger.error(error);
 });

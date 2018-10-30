@@ -9,13 +9,6 @@ const gameUtilitiesTypes = protobuf.loadSync('proto/bnet/game_utilities_types.pr
 const Attribute = gameUtilitiesTypes.lookupType('.bgs.protocol.Attribute');
 const Variant = gameUtilitiesTypes.lookupType('.bgs.protocol.Variant');
 
-function readFourCC(fourCCInt) {
-    return  String.fromCharCode((fourCCInt >> 24) & 0xFF) +
-            String.fromCharCode((fourCCInt >> 16) & 0xFF) +
-            String.fromCharCode((fourCCInt >> 8) & 0xFF) +
-            String.fromCharCode(fourCCInt & 0xFF);
-}
-
 function GetJSON(variant, name) {
     let string = variant.blobValue.toString();
     return JSON.parse(string.slice(name.length + 1, string.length - 1));
@@ -105,19 +98,15 @@ module.exports = class GameUtilitiesService extends Service {
             switch (context.request.attributeKey) {
                 case 'Command_RealmListRequest_v1_b9': {
                     return new Promise((resolve, reject) => {
-                        global.etcd.get('aurora/services/WoWService/subRegions', (err, result) => {
-                            if (err) {
-                                reject(0x8000006D); //ERROR_UTIL_SERVER_MISSING_REALM_LIST
-                            }
-
-                            result.node.nodes.forEach((node) => {
-                                let variant = Variant.create();
-                                variant.stringValue = node.key.split('/').pop();
-                                context.response.attributeValue.push(variant);
+                        global.zookeeper.getChildren('/aurora/services/WoWService/subRegions').then((children) => {
+                            children.forEach((subRegionId) => {
+                               let variant = Variant.create();
+                               variant.stringValue = subRegionId;
+                               context.response.attributeValue.push(variant);
                             });
 
                             resolve(0);
-                        });
+                        })
                     });
                 }
                 default: {
@@ -131,6 +120,7 @@ module.exports = class GameUtilitiesService extends Service {
             let clientInfo = GetJSON(params.ClientInfo, 'JSONRealmListTicketClientInformation');
 
             let listTicket = crypto.randomBytes(20);
+            let listTicketPath = '/aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket.toString('hex');
 
             let listTicketInfo = {
                 info: clientInfo.info,
@@ -139,108 +129,98 @@ module.exports = class GameUtilitiesService extends Service {
 
             global.logger.debug('Created RealmListRequest with listTicket: ' + listTicket.toString('hex'));
 
-            return new Promise((resolve, reject) => {
-                global.etcd.set('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket.toString('hex'), JSON.stringify(listTicketInfo), { ttl: 120 }, (err) => {
-                    if (err) {
-                        reject(0x80000076) //ERROR_UTIL_SERVER_UNABLE_TO_GENERATE_REALM_LIST_TICKET
-                    }
+            return global.zookeeper.create(listTicketPath, JSON.stringify(listTicketInfo)).then(() => {
+                let responseParams = {
+                    RealmListTicket: null
+                };
 
-                    let responseParams = {
-                        RealmListTicket: null
-                    };
+                responseParams.RealmListTicket = Variant.create();
+                responseParams.RealmListTicket.blobValue = listTicket;
 
-                    responseParams.RealmListTicket = Variant.create();
-                    responseParams.RealmListTicket.blobValue = listTicket;
-
-                    resolve(responseParams);
-                })
+                return Promise.resolve(responseParams);
+            }, () => {
+                return Promise.reject(0x80000076) //ERROR_UTIL_SERVER_UNABLE_TO_GENERATE_REALM_LIST_TICKET
             });
         });
 
         this.registerCommand('RealmListRequest', (params, commandValue) => {
             let listTicket = params.RealmListTicket.blobValue.toString('hex');
+            let listTicketPath = '/aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket;
             let subRegion = commandValue.stringValue;
 
             global.logger.debug('Received RealmListRequest with listTicket: ' + listTicket);
 
-            return new Promise((resolve, reject) => {
-                global.etcd.get('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket, (err, result) => {
-                    if (err) {
-                        reject(0x8000012D); //ERROR_WOW_SERVICES_INVALID_REALM_LIST_TICKET
-                    }
+            return global.zookeeper.exists(listTicketPath).
+                then(()=> {
+                    return global.zookeeper.getData(listTicketPath);
+                }, () => {
+                    return Promise.reject(0x8000012D); //ERROR_WOW_SERVICES_INVALID_REALM_LIST_TICKET
+                }).
+                then((listTicketInfoData) => {
+                    let listTicketInfo = JSON.parse(listTicketInfoData);
 
-                    resolve(JSON.parse(result.node.value));
-                });
-            }).then((listTicketInfo) => {
-                return new Promise((resolve, reject) => {
-                    global.etcd.get('/aurora/services/WoWService/subRegions/' + subRegion + '/realms', { recursive: true }, (err, result) => {
-                        if (err) {
-                            reject(0x8000006D); //ERROR_UTIL_SERVER_MISSING_REALM_LIST
-                        }
+                    return new Promise((resolve, reject) => {
+                        global.zookeeper.getChildren('/aurora/services/WoWService/subRegions/' + subRegion + '/realms').
+                        then((realms) => {
+                            let realmListUpdates = [];
+                            let characterCounts = [];
 
-                        let responseParams = {
-                            RealmList: Variant.create(),
-                            CharacterCountList: Variant.create()
-                        };
-
-                        let realmListUpdates = [];
-                        let characterCounts = [];
-
-                        result.node.nodes.forEach((realmNode) => {
-
-                            let realmEntry = {
-                                update: {},
-                                deleting: false
+                            let responseParams = {
+                                RealmList: Variant.create(),
+                                CharacterCountList: Variant.create()
                             };
+                            realms.forEach((realmAddress) => {
+                                let realmEntry = {
+                                    update: {},
+                                    deleting: false
+                                };
 
-                            let realmConfiguration = JSON.parse(realmNode.nodes.find((element) => {
-                                return element.key.includes('configuration');
-                            }).value);
+                                let promises = [];
+                                promises.push(global.zookeeper.getData('/aurora/services/WoWService/subRegions/' + subRegion + '/realms/' + realmAddress + '/configuration'));
+                                promises.push(global.zookeeper.getData('/aurora/services/WoWService/subRegions/' + subRegion + '/realms/' + realmAddress + '/name'));
+                                promises.push(global.zookeeper.getData('/aurora/services/WoWService/subRegions/' + subRegion + '/realms/' + realmAddress + '/version'));
+                                promises.push(global.zookeeper.getData('/aurora/services/WoWService/subRegions/' + subRegion + '/realms/' + realmAddress + '/deleting'));
 
-                            realmEntry.update.cfgRealmsID = realmConfiguration.cfgRealmsID;
-                            realmEntry.update.cfgTimezonesID = realmConfiguration.cfgTimezonesID;
-                            realmEntry.update.cfgLanguagesID = realmConfiguration.cfgLanguagesID;
-                            realmEntry.update.cfgCategoriesID = realmConfiguration.cfgCategoriesID;
-                            realmEntry.update.cfgConfigsID = realmConfiguration.cfgConfigsID;
+                                Promise.all(promises).then((results) => {
+                                    let realmConfiguration = JSON.parse(results[0]);
+                                    let realmVersion = JSON.parse(results[2]);
 
-                            realmEntry.update.name = realmNode.nodes.find((element) => {
-                                return element.key.includes('name');
-                            }).value;
+                                    realmEntry.update.cfgRealmsID = realmConfiguration.cfgRealmsID;
+                                    realmEntry.update.cfgTimezonesID = realmConfiguration.cfgTimezonesID;
+                                    realmEntry.update.cfgLanguagesID = realmConfiguration.cfgLanguagesID;
+                                    realmEntry.update.cfgCategoriesID = realmConfiguration.cfgCategoriesID;
+                                    realmEntry.update.cfgConfigsID = realmConfiguration.cfgConfigsID;
 
-                            //TODO set recommended for the same locale, check for build compatability (flags etc.)
-                            realmEntry.update.wowRealmAddress = stringToRealmAddress(realmNode.key.split('/').pop());
-                            realmEntry.update.populationState = 1;
-                            realmEntry.update.flags = 0;
+                                    realmEntry.update.name = results[1];
+                                    realmEntry.update.wowRealmAddress = stringToRealmAddress(realmAddress);
+                                    realmEntry.update.populationState = 1;
+                                    realmEntry.update.flags = 0;
 
-                            realmEntry.update.version = JSON.parse(realmNode.nodes.find((element) => {
-                                return element.key.includes('version');
-                            }).value);
+                                    realmEntry.update.version = realmVersion;
 
-                            if (realmEntry.update.version.versionMajor !== listTicketInfo.info.version.versionMajor ||
-                                realmEntry.update.version.versionMinor !== listTicketInfo.info.version.versionMinor ||
-                                realmEntry.update.version.versionRevision !== listTicketInfo.info.version.versionRevision)
-                                realmEntry.update.flags |= 0x1;
+                                    if (realmEntry.update.version.versionMajor !== listTicketInfo.info.version.versionMajor ||
+                                        realmEntry.update.version.versionMinor !== listTicketInfo.info.version.versionMinor ||
+                                        realmEntry.update.version.versionRevision !== listTicketInfo.info.version.versionRevision)
+                                        realmEntry.update.flags |= 0x1;
 
-                            realmEntry.deleting = JSON.parse(realmNode.nodes.find((element) => {
-                                return element.key.includes('deleting');
-                            }).value);
+                                    realmEntry.deleting = JSON.parse(results[3]);
 
-                            realmListUpdates.push(realmEntry);
+                                    realmListUpdates.push(realmEntry);
 
-                            let count = {
-                                wowRealmAddress: realmEntry.update.wowRealmAddress,
-                                count: 0
-                            };
+                                    let count = {
+                                        wowRealmAddress: realmEntry.update.wowRealmAddress,
+                                        count: 0
+                                    };
 
-                            characterCounts.push(count);
-                        });
-
-                        responseParams.RealmList.blobValue = deflateJSONAttributeValue('JSONRealmListUpdates', {updates: realmListUpdates});
-                        responseParams.CharacterCountList.blobValue = deflateJSONAttributeValue('JSONRealmCharacterCountList', {counts: characterCounts});
-                        resolve(responseParams);
+                                    characterCounts.push(count);
+                                })
+                            });
+                            responseParams.RealmList.blobValue = deflateJSONAttributeValue('JSONRealmListUpdates', {updates: realmListUpdates});
+                            responseParams.CharacterCountList.blobValue = deflateJSONAttributeValue('JSONRealmCharacterCountList', {counts: characterCounts});
+                            resolve(responseParams);
+                        })
                     });
-                })
-            });
+                });
         });
 
         this.registerCommand('RealmJoinRequest', (params, commandValue) => {
@@ -256,34 +236,16 @@ module.exports = class GameUtilitiesService extends Service {
                 JoinSecret: Variant.create()
             };
 
-            return new Promise((resolve, reject) => {
-                global.etcd.get('aurora/services/WoWService/subRegions/' + subRegion + '/realms/' + realmAddress + '/families', (err, result) => {
-                    if (err) {
-                        reject(0x80000071) //ERROR_UTIL_SERVER_INVALID_VIRTUAL_REALM
-                    }
+            return global.zookeeper.getData('/aurora/services/WoWService/subRegions/' + subRegion + '/realms/' + realmAddress + '/families').
+            then((addressFamiliesData) => {
+                responseParams.ServerAddresses.blobValue = deflateJSONAttributeValue('JSONRealmListServerIPAddresses',
+                    { families: JSON.parse(addressFamiliesData)});
 
-                    //let realmEntry = JSON.parse(result.node.value);
+                return global.zookeeper.getData('/aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket);
+            }).
+            then((listTicketData) => {
+                let listTicketInfo = JSON.parse(listTicketData);
 
-                    //if(!realmEntry.hasOwnProperty('families')) {
-                    //    reject(0x80000131) //ERROR_WOW_SERVICES_NO_REALM_JOIN_IP_FOUND
-                    //}
-
-                    responseParams.ServerAddresses.blobValue = deflateJSONAttributeValue('JSONRealmListServerIPAddresses',
-                        { families: JSON.parse(result.node.value)});
-
-                    resolve();
-                })
-            }).then(() => {
-                return new Promise((resolve, reject) => {
-                    global.etcd.get('aurora/services/' + this.getServiceName() + '/realmListTickets/' + listTicket, (err, result) => {
-                        if (err) {
-                            reject(0x8000012D); //ERROR_WOW_SERVICES_INVALID_REALM_LIST_TICKET
-                        }
-
-                        resolve(JSON.parse(result.node.value));
-                    });
-                });
-            }).then((listTicketInfo) => {
                 responseParams.RealmJoinTicket.blobValue = crypto.randomBytes(20);
                 responseParams.JoinSecret.blobValue = crypto.randomBytes(32);
 
@@ -293,15 +255,10 @@ module.exports = class GameUtilitiesService extends Service {
                     gameAccount: listTicketInfo.identity
                 };
 
-                return new Promise((resolve, reject) => {
-                    global.etcd.set('aurora/services/' + this.getServiceName() + '/realmJoinTickets/' + responseParams.RealmJoinTicket.blobValue.toString('hex'), JSON.stringify(joinTicketInfo), { ttl: 180 }, (err) => {
-                        if (err) {
-                            reject(0x80000075) //ERROR_UTIL_SERVER_UNABLE_TO_GENERATE_JOIN_TICKET
-                        }
-
-                        resolve(responseParams);
-                    });
-                });
+                return global.zookeeper.create('/aurora/services/' + this.getServiceName() + '/realmJoinTickets/' + responseParams.RealmJoinTicket.blobValue.toString('hex'), JSON.stringify(joinTicketInfo));
+            }).
+            then(()=> {
+                return Promise.resolve(responseParams);
             });
         })
     }

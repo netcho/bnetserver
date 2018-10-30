@@ -26,13 +26,13 @@ module.exports = class Connection{
         this.exportedServices[0] = this.connectionService.getServiceHash();
         this.importedServices[this.connectionService.getServiceHash()] = this.connectionService;
 
-        /*global.etcd.getAll().prefix('aurora/services/').keys().then((services) => {
+        global.etcd.namespace('aurora/').namespace('services/').getAll().keys().then((services) => {
             services.forEach((serviceKey) => {
                 global.etcd.get(serviceKey).number().then((serviceId) => {
                     this.exportedServices.push(serviceId);
                 });
             });
-        });*/
+        });
 
         this.connectionService.registerHandler('Connect', (context) => {
             return global.amqpConnection.createChannel().then((channel) => {
@@ -97,8 +97,9 @@ module.exports = class Connection{
 
                 if (!this.bindless) {
                     for (let boundService in context.request.bindRequest.importedService) {
-                        context.response.bindResponse.importedServiceId.push(this.exportedServices.findIndex((serviceHash) =>
-                        {return serviceHash === boundService.hash}));
+                        context.response.bindResponse.importedServiceId.push(this.exportedServices.findIndex((serviceHash) => {
+                            return serviceHash === boundService.hash
+                        }));
                     }
 
                     for(let boundService in context.request.bindRequest.exportedService) {
@@ -192,7 +193,10 @@ module.exports = class Connection{
 
     disconnect() {
         clearTimeout(this.keepaliveTimer);
-        this.amqpChannel.close();
+
+        if (this.amqpChannel) {
+            this.amqpChannel.close();
+        }
         this.socket.destroy();
     }
 

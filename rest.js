@@ -1,13 +1,41 @@
+'use strict';
+
 const bcrypt = require('bcrypt');
+const http = require('http');
 const express = require('express');
 const bodyParser = require('body-parser');
-const Aerospike = require('aerospike');
+const zookeeper = require('zookeeper-cluster-client');
+const winston = require('winston');
+const morgan = require('morgan');
 const models = require('./models');
+
+const winstonFileTransportConfig = require('./config/winston.json');
+const winstonFileTransport = new winston.transports.File(winstonFileTransportConfig);
+let winstonTransports = [winstonFileTransport];
+
+if (process.env.NODE_ENV === 'development') {
+    const winstonConsoleTransport = new winston.transports.Console({
+        level: 'debug',
+        handleExceptions: true,
+        json: false,
+        colorize: true
+    });
+
+    winstonTransports.push(winstonConsoleTransport);
+}
+
+winston.emitErrs = true;
+global.logger = new winston.Logger({transports: winstonTransports, exitOnError: false});
 
 const rest = express();
 
 rest.use(bodyParser.json());
 rest.use(bodyParser.urlencoded({ extended: true }));
+rest.use(morgan('combined', { stream: { write: message => global.logger.info(message) }}));
+
+rest.get('/healthz', (req, res) => {
+    res.sendStatus(200);
+});
 
 rest.get('/bnetserver/login/:loginTicket', (req, res) => {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -49,15 +77,16 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
     models.Account.findOne({where: {email: username}}).then((account) => {
         if (account){
             if(bcrypt.compareSync(password, account.hash) && req.params.hasOwnProperty('loginTicket')) {
-                return new Promise((resolve) => {
-                    global.etcd.set('/aurora/services/AuthenticationService/loginTickets/' + req.params.loginTicket + '/accountId', account.id, { ttl: 120 },(err) => {
-                        if (err) {
-                            return Promise.resolve('LOGIN');
-                        }
-
+                let loginTicketPath = '/aurora/services/AuthenticationService/loginTickets/' + req.params.loginTicket;
+                return global.zookeeper.exists(loginTicketPath).
+                    then(() => {
+                        return global.zookeeper.create(loginTicketPath + '/accountId', account.id);
+                    }).
+                    then(() => {
                         loginResult.login_ticket = req.params.loginTicket;
-                        resolve('DONE');
-                    })
+                        return Promise.resolve('DONE');
+                }).catch(() => {
+                    return Promise.resolve('LOGIN');
                 });
             }
             else {
@@ -75,4 +104,20 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
     });
 });
 
-module.exports = rest;
+models.sequelize.sync().then(() => {
+    global.logger.debug('Database synced');
+    return new Promise((resolve, reject) => {
+        global.zookeeper = zookeeper.createClient(process.env.ZOOKEEPER_ADDRESS + ':2181');
+        global.zookeeper.once('connected', () => {
+            resolve();
+        });
+        global.zookeeper.connect();
+    });
+}).then(()=> {
+    global.logger.debug('Connected to Zookeeper');
+    http.createServer(rest).listen(80, () => {
+        //TODO add a method to dynamically retrieve the external address of the service
+        //global.etcd.set('/aurora/services/AuthenticationService/WebAuthUrl', 'https://127.0.0.1:443/bnetserver/login/');
+        global.logger.info('REST Service listening');
+    });
+});
