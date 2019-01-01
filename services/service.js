@@ -8,7 +8,7 @@ const protobuf = require('protobufjs');
 
 const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
 
-module.exports = class Service{
+class Service {
     constructor(name, file) {
         this.hash = 0;
         this.name = name;
@@ -41,6 +41,26 @@ module.exports = class Service{
         });
     }
 
+    sendError(context, error) {
+        let errorHeader = Header.fromObject(context.header);
+
+            if (!Number.isNaN(error)) {
+                errorHeader.status = error;
+            }
+            else {
+                global.logger.error(error);
+                errorHeader.status = 0x00000001;
+            }
+
+            errorHeader.serviceId = 0xFE;
+            errorHeader.size = 0;
+            let headerBuffer = Header.encode(errorHeader).finish();
+            let buffer = Buffer.alloc(2 + headerBuffer.length);
+            buffer.writeUInt16BE(headerBuffer.length, 0);
+            headerBuffer.copy(buffer, 2);
+            return Promise.resolve(buffer);
+    }
+
     handleCall(context, payload) {
         if (this.handlers[context.header.methodId] !== undefined) {
             let method = this.methods.find((element) => {
@@ -50,38 +70,44 @@ module.exports = class Service{
             let responseType = this.rootNamespace.lookupType(method.responseType);
             let requestType = this.rootNamespace.lookupType(method.requestType);
 
-            context.response = responseType.create();
+            try {
+                context.response = responseType.create();
 
-            if (method.requestType !== '.bgs.protocol.NoData') {
-                context.request = requestType.decode(payload);
+                if (method.requestType !== '.bgs.protocol.NoData') {
+                    context.request = requestType.decode(payload);
+                }
+            }
+            catch (error) {
+                global.logger.error(error);
+                return this.sendError(context, 0x00000BC5); //ERROR_RPC_MALFORMED_REQUEST
             }
 
             return this.handlers[context.header.methodId](context).then((status) => {
-                if (status === 0) {
-                    if(method.responseType !== '.bgs.protocol.NO_RESPONSE') {
-                        let responseBuffer = responseType.encode(context.response).finish();
-                        let responseHeader = Header.create();
-                        responseHeader.serviceId = 0xFE;
-                        responseHeader.serviceHash = context.header.serviceHash;
-                        responseHeader.methodId = context.header.methodId;
-                        responseHeader.token = context.header.token;
-                        responseHeader.status = status;
-                        responseHeader.size = responseBuffer.length;
+                if(method.responseType !== '.bgs.protocol.NO_RESPONSE') {
+                    let responseBuffer = responseType.encode(context.response).finish();
+                    let responseHeader = Header.fromObject(context.header);
+                    responseHeader.serviceId = 0xFE;
+                    responseHeader.status = status;
+                    responseHeader.size = responseBuffer.length;
 
-                        let headerBuffer = Header.encode(responseHeader).finish();
+                    let headerBuffer = Header.encode(responseHeader).finish();
 
-                        let buffer = Buffer.alloc(2 + headerBuffer.length + responseBuffer.length);
-                        buffer.writeUInt16BE(headerBuffer.length, 0);
-                        headerBuffer.copy(buffer, 2);
-                        responseBuffer.copy(buffer,2+headerBuffer.length);
+                    let buffer = Buffer.alloc(2 + headerBuffer.length + responseBuffer.length);
+                    buffer.writeUInt16BE(headerBuffer.length, 0);
+                    headerBuffer.copy(buffer, 2);
+                    responseBuffer.copy(buffer,2+headerBuffer.length);
 
-                        return Promise.resolve(buffer);
-                    }
+                    return Promise.resolve(buffer);
                 }
-            });
+                else {
+                    return Promise.resolve(null);
+                }
+            }, this.sendError.bind(this, context));
         }
         else {
-            return Promise.reject(0x00000BC3);
+            return this.sendError(context, 0x00000BC7); //ERROR_RPC_NOT_IMPLEMENTED
         }
     }
-};
+}
+
+module.exports = Service;

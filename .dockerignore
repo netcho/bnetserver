@@ -3,4 +3,5 @@
 /seeders/
 /migrations/
 .idea
-/config/
+/skaffold.yaml
+/.eslintrc.json

@@ -4,13 +4,14 @@
 'use strict';
 
 const crypto = require('crypto');
+const appRoot = require('app-root-path');
 
-const Service = require('./service');
-const ChallengeListener = require('../listeners/challenge');
-const AuthenticationListener = require('../listeners/authentication');
-const models = require('../models/');
+const Service = require(appRoot + '/services/service');
+const ChallengeListener = require(appRoot + '/listeners/challenge');
+const AuthenticationListener = require(appRoot + '/listeners/authentication');
+const models = require(appRoot + '/models/');
 
-module.exports = class AuthenticationService extends Service {
+class AuthenticationService extends Service {
     constructor() {
         super('AuthenticationService', 'proto/bnet/authentication_service.proto');
 
@@ -20,21 +21,26 @@ module.exports = class AuthenticationService extends Service {
     }
 
     Logon(context) {
-        global.logger.info('Logon Request for program '+context.request.program+' on '+context.request.platform);
+        global.logger.debug('Logon Request for program '+context.request.program+' on '+context.request.platform);
 
         let loginTicket = crypto.randomBytes(20).toString('hex');
         let loginTicketPath = '/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket;
 
         let challengeListener = new ChallengeListener(context);
 
-        return global.zookeeper.mkdirp(loginTicketPath).
-            then(() => {
-                return global.zookeeper.create(loginTicketPath + '/program', context.request.program);
-            }).
-            then(() => {
-                challengeListener.OnExternalChallenge('https://127.0.0.1:443/bnetserver/login/' + loginTicket);
-                return Promise.resolve(0);
+        let loginTicketLease = global.etcd3.lease(30);
+
+        return loginTicketLease.put(loginTicketPath).value(loginTicket).then(() => {
+            return loginTicketLease.put(loginTicketPath + '/program').value(context.request.program).exec();
+        }).then(() => {
+            global.etcd3.get('/aurora/services/' + this.getServiceName() + '/WebAuthUrl').string().then((webAuthUrl) => {
+                challengeListener.OnExternalChallenge(webAuthUrl + loginTicket);
             });
+            return Promise.resolve(0);
+        }).catch((error) => {
+            global.logger.error(error);
+            return Promise.reject(0x00000001);
+        });
     }
 
     VerifyWebCredential(context) {
@@ -42,21 +48,23 @@ module.exports = class AuthenticationService extends Service {
         let authenticationListener = new AuthenticationListener(context);
 
         if (loginTicket.length) {
+            global.logger.debug('Verifying credentials for loginTicket: ' + loginTicket);
+
             let loginTicketPath = '/aurora/services/' + this.getServiceName() + '/loginTickets/' + loginTicket;
 
-            global.zookeeper.getData(loginTicketPath + '/accountId').
+            global.etcd3.get(loginTicketPath + '/accountId').string().
             then((accountId) => {
                 return models.Account.find({ include: [ { model: models.GameAccount, as: 'gameAccounts'} ], where: { id: accountId }});
             }, () => {
                 authenticationListener.OnLogonComplete(0x0000000A); //ERROR_NO_AUTH
             }).
             then((account) => {
-                global.zookeeper.getData(loginTicketPath + '/program').then((program) => {
+                global.etcd3.get(loginTicketPath + '/program').string().then((program) => {
                     let usableGameAccounts = account.gameAccounts.filter((gameAccount) => {
                         return gameAccount.program === program;
                     });
 
-                    if(!usableGameAccounts.length) {
+                    if(usableGameAccounts.length >= 1) {
                         authenticationListener.OnLogonComplete(0, account, usableGameAccounts); //ERROR_OK
                     }
                     else {
@@ -74,4 +82,6 @@ module.exports = class AuthenticationService extends Service {
             return Promise.reject(0x00000001);
         }
     }
-};
+}
+
+module.exports = AuthenticationService;

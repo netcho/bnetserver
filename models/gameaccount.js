@@ -1,8 +1,10 @@
 'use strict';
+const appRoot = require('app-root-path');
+const FourCC = require(appRoot + '/utils/fourcc');
 const Long = require('long');
-const protobufjs = require('protobufjs');
+const protobuf = require('protobufjs');
 
-const entityTypes = protobufjs.loadSync('proto/bnet/entity_types.proto');
+const entityTypes = protobuf.loadSync('proto/bnet/entity_types.proto');
 const entityId = entityTypes.lookupType('bgs.protocol.EntityId');
 
 module.exports = (sequelize, DataTypes) => {
@@ -22,22 +24,10 @@ module.exports = (sequelize, DataTypes) => {
         getterMethods: {
             entityId() {
                 let id = entityId.create();
+                let programId = new FourCC(this.program);
 
                 id.low = Long.fromString(this.id, true);
-
-                let stringReversed = this.program.split('').reverse().join('');
-                let padSize = 4 - this.program.length;
-                let bytes = [];
-
-                for (let i = 0; i > padSize; i++)
-                    bytes.push(0);
-
-                for (let j = 0; j > stringReversed.length; j++)
-                    bytes.push(stringReversed.charCodeAt(j));
-
-                let fourCC = (bytes[3] & 0xFF000000) | (bytes[2] & 0xFF0000) | (bytes[1] & 0xFF00) | (bytes[0] & 0xFF);
-
-                id.high = Long.fromBits(fourCC, (0x2 << 24) | (this.region & 0xFF), true);
+                id.high = Long.fromBits(programId.getIntValue(), (0x2 << 24) | (this.region & 0xFF), true);
 
                 return id;
             }

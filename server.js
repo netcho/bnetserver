@@ -3,10 +3,10 @@
  */
 'use strict';
 
-const zookeeperClient = require('zookeeper-cluster-client');
 const amqplib = require('amqplib');
 const winston = require('winston');
 const models = require('./models');
+const { Etcd3 } = require('etcd3');
 
 const ServiceReceiver = require('./messaging/receiver');
 
@@ -26,26 +26,40 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 winston.emitErrs = true;
-global.logger = new winston.Logger({transports: winstonTransports, exitOnError: false});
 
-models.sequelize.sync().then(() => {
-    global.logger.debug('Database synced');
-    return new Promise((resolve, reject) => {
-        global.zookeeper = zookeeperClient.createClient(process.env.ZOOKEEPER_ADDRESS + ':2181');
-        global.zookeeper.once('connected', () => {
-            resolve();
+global.amqpConnection = null;
+global.serviceReceiver = null;
+global.logger = new winston.Logger({transports: winstonTransports, exitOnError: false});
+global.etcd3 = new Etcd3({hosts: process.env.ETCD_HOST});
+
+let amqpUrl = 'amqp://' + process.env.RABBITMQ_USERNAME + ':' + process.env.RABBITMQ_PASSWORD + '@' + process.env.RABBITMQ_SERVICE_NAME;
+
+let promises = [];
+
+process.on('unhandledRejection', (error) => {
+    global.logger.error(error);
+    process.exit(1);
+});
+
+process.on('SIGINT', () => {
+    if (global.serviceReceiver) {
+        global.serviceReceiver.closeChannel().then(() => {
+            if (global.amqpConnection) {
+                global.amqpConnection.close();
+            }
         });
-        global.zookeeper.connect();
-    });
-}).then(() => {
-    global.logger.debug('Connected to Zookeeper');
-    return amqplib.connect('amqp://' + process.env.RABBITMQ_USERNAME + ':' + process.env.RABBITMQ_PASSWORD + '@' + process.env.RABBITMQ_SERVICE_NAME);
-}).then((conn) => {
-    global.logger.debug('Connected to RabbitMQ');
+    }
+
+    global.etcd3.close();
+});
+
+promises.push(amqplib.connect(amqpUrl));
+promises.push(models.sequelize.sync());
+
+Promise.all(promises).then(([conn]) => {
     global.amqpConnection = conn;
     const ServiceName = process.argv[2];
     const Service = require('./services/' + ServiceName);
-    new ServiceReceiver(new Service());
-}).catch((error) => {
-    global.logger.error(error);
+    global.serviceReceiver = new ServiceReceiver(new Service());
 });
+

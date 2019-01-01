@@ -1,13 +1,13 @@
 'use strict';
 
-const protobuf = require('protobufjs');
-
-const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
-
-module.exports = class Receiver{
-    constructor(service){
-        global.logger.info('Starting ' + service.getServiceName());
+class Receiver {
+    constructor(service) {
         this.amqpChannel = undefined;
+
+        global.logger.info('Starting ' + service.getServiceName());
+
+        global.etcd3.put('/aurora/services/' + service.getServiceName() + '/hash').value(service.getServiceHash()).exec();
+
         global.amqpConnection.createChannel().then((channel) => {
             this.amqpChannel = channel;
             return Promise.resolve(channel);
@@ -19,7 +19,6 @@ module.exports = class Receiver{
             this.amqpChannel.bindQueue(result.queue, 'battlenet_aurora_bus', service.getServiceHash().toString());
             return Promise.resolve(result.queue);
         }).then((queueName) => {
-            global.etcd.set('/aurora/services/' + service.getServiceName() + '/hash', service.getServiceHash());
             global.logger.info(service.getServiceName()+' listening');
             this.amqpChannel.consume(queueName, (message) => {
                 let context = {
@@ -28,25 +27,25 @@ module.exports = class Receiver{
                     request: null,
                     response: null
                 };
+
                 service.handleCall(context, message.content).then((buffer) => {
-                    this.amqpChannel.sendToQueue(message.properties.replyTo, buffer);
-                }).catch((error) => {
-                    if (!Number.isNaN(error)) {
-                        let errorHeader = Header.fromObject(message.properties.headers);
-                        errorHeader.serviceId = 0xFE;
-                        errorHeader.status = error;
-                        errorHeader.size = 0;
-                        let headerBuffer = Header.encode(errorHeader).finish();
-                        let buffer = Buffer.alloc(2 + headerBuffer.length);
-                        buffer.writeUInt16BE(headerBuffer.length, 0);
-                        headerBuffer.copy(buffer, 2);
-                        this.amqpChannel.sendToQueue(message.properties.replyTo, buffer);
-                    }
-                    else {
-                        global.logger.error(error);
+                    if (Buffer.isBuffer(buffer)) {
+                        this.amqpChannel.sendToQueue(message.properties.replyTo, buffer,
+                            {
+                                appId: service.getServiceName(),
+                                type: 'response'
+                            });
                     }
                 });
+
+                this.amqpChannel.ack(message);
             });
         });
     }
-};
+
+    closeChannel() {
+        return this.amqpChannel.close();
+    }
+}
+
+module.exports = Receiver;

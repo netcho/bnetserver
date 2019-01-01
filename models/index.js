@@ -11,7 +11,7 @@ let db = {};
 let sequelize = null;
 
 config.logging = function (msg) {
-    global.logger.info(msg);
+    global.logger.debug(msg);
 };
 
 if (config.use_env_letiable) {

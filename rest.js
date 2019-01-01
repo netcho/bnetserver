@@ -4,9 +4,9 @@ const bcrypt = require('bcrypt');
 const http = require('http');
 const express = require('express');
 const bodyParser = require('body-parser');
-const zookeeper = require('zookeeper-cluster-client');
 const winston = require('winston');
 const morgan = require('morgan');
+const { Etcd3 } = require('etcd3');
 const models = require('./models');
 
 const winstonFileTransportConfig = require('./config/winston.json');
@@ -25,7 +25,22 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 winston.emitErrs = true;
+
 global.logger = new winston.Logger({transports: winstonTransports, exitOnError: false});
+global.etcd3 = new Etcd3({hosts: process.env.ETCD_HOST});
+
+let ready = false;
+
+process.on('unhandledRejection', (error) => {
+    global.logger.error(error);
+    process.exit(1);
+});
+
+process.on('SIGINT', () => {
+    ready = false;
+
+    global.etcd3.close();
+});
 
 const rest = express();
 
@@ -33,8 +48,12 @@ rest.use(bodyParser.json());
 rest.use(bodyParser.urlencoded({ extended: true }));
 rest.use(morgan('combined', { stream: { write: message => global.logger.info(message) }}));
 
-rest.get('/healthz', (req, res) => {
+rest.get('/alive', (req, res) => {
     res.sendStatus(200);
+});
+
+rest.get('/ready', (req, res) => {
+    ready ? res.sendStatus(200) : res.sendStatus(500);
 });
 
 rest.get('/bnetserver/login/:loginTicket', (req, res) => {
@@ -72,52 +91,78 @@ rest.post('/bnetserver/login/:loginTicket', (req, res) => {
             password = input.value;
     });
 
-    let loginResult = {};
+    if (req.params.hasOwnProperty('loginTicket')) {
+        let loginTicketPath = '/aurora/services/AuthenticationService/loginTickets/' + req.params.loginTicket;
 
-    models.Account.findOne({where: {email: username}}).then((account) => {
-        if (account){
-            if(bcrypt.compareSync(password, account.hash) && req.params.hasOwnProperty('loginTicket')) {
-                let loginTicketPath = '/aurora/services/AuthenticationService/loginTickets/' + req.params.loginTicket;
-                return global.zookeeper.exists(loginTicketPath).
-                    then(() => {
-                        return global.zookeeper.create(loginTicketPath + '/accountId', account.id);
+        let loginResult = {};
+
+        global.etcd3.get(loginTicketPath).string().then((loginTicket) => {
+            if (loginTicket) {
+                if (username && password) {
+                    return models.Account.findOne({where: {email: username}}).then((account) => {
+                        if (account) {
+                            if(bcrypt.compareSync(password, account.hash)) {
+                                let loginTicketLease = global.etcd3.lease(30);
+                                return loginTicketLease.put(loginTicketPath + '/accountId').value(account.id).exec();
+                            }
+                            else {
+                                return Promise.reject('Invalid password for account: ' + username);
+                            }
+                        }
+                        else {
+                            return Promise.reject('No account found: ' + username);
+                        }
                     }).
                     then(() => {
-                        loginResult.login_ticket = req.params.loginTicket;
+                        loginResult.login_ticket = loginTicket;
                         return Promise.resolve('DONE');
-                }).catch(() => {
-                    return Promise.resolve('LOGIN');
-                });
+                    }).
+                    catch((error) => {
+                        global.logger.error(error);
+                        return Promise.resolve('LOGIN');
+                    });
+                }
             }
             else {
-                global.logger.info('Invalid password for account: ' + username);
-                return Promise.resolve('LOGIN');
+                return Promise.reject('No such login ticket exists');
             }
-        }
-        else {
-            global.logger.debug('No account found: ' + username);
-            return Promise.resolve('LOGIN');
-        }
-    }).then((state) => {
-        loginResult.authentication_state = state;
-        res.json(loginResult);
-    });
+        }).
+        then((state) => {
+            loginResult.authentication_state = state;
+            res.json(loginResult);
+        }).
+        catch(() => {
+            res.sendStatus(500);
+        });
+    }
+    else {
+        res.sendStatus(400);
+    }
+
 });
 
 models.sequelize.sync().then(() => {
     global.logger.debug('Database synced');
-    return new Promise((resolve, reject) => {
-        global.zookeeper = zookeeper.createClient(process.env.ZOOKEEPER_ADDRESS + ':2181');
-        global.zookeeper.once('connected', () => {
-            resolve();
-        });
-        global.zookeeper.connect();
+    ready = true;
+});
+
+if(process.env.NODE_ENV === 'development') {
+    const https = require('https');
+    const fs = require('fs');
+
+    https.createServer({
+        key: fs.readFileSync('certs/tls.key'),
+        cert: fs.readFileSync('certs/tls.crt')
+    }, rest).listen(443);
+
+    global.etcd3.put('/aurora/services/AuthenticationService/WebAuthUrl').value('https://127.0.0.1:443/bnetserver/login/').then(() => {
+        global.logger.info('REST Service listening');
     });
-}).then(()=> {
-    global.logger.debug('Connected to Zookeeper');
+}
+else {
     http.createServer(rest).listen(80, () => {
         //TODO add a method to dynamically retrieve the external address of the service
         //global.etcd.set('/aurora/services/AuthenticationService/WebAuthUrl', 'https://127.0.0.1:443/bnetserver/login/');
         global.logger.info('REST Service listening');
     });
-});
+}

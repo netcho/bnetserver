@@ -2,10 +2,10 @@
 
 const Listener = require('./listener');
 
-module.exports = class ChallengeListener extends Listener {
+class ChallengeListener extends Listener {
     constructor(context) {
         super('ChallengeListener', 'proto/bnet/challenge_service.proto');
-        this.clientQueue = context.queueName;
+        this.setClientQueueName(context.queueName);
     }
 
     OnExternalChallenge(url) {
@@ -14,4 +14,6 @@ module.exports = class ChallengeListener extends Listener {
             request.payload = Buffer.from(url, 'ascii');
         });
     }
-};
+}
+
+module.exports = ChallengeListener;

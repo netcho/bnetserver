@@ -1,11 +1,13 @@
 FROM node:10-alpine
 
 # Create app directory
-RUN mkdir -p /usr/src/app
+RUN mkdir -p /usr/src/app/logs
+RUN mkdir -p /usr/src/app/config
+RUN mkdir -p /usr/src/app/certs
 WORKDIR /usr/src/app
 
 # Install app dependencies
-RUN apk add python make gcc g++
+RUN apk add --no-cache tini python make gcc g++
 COPY package*.json /usr/src/app/
 RUN npm install
 
@@ -13,4 +15,4 @@ RUN npm install
 COPY . /usr/src/app
 
 EXPOSE 443 1119
-CMD [ "npm", "run", "frontend" ]
+ENTRYPOINT ["/sbin/tini", "-v", "-e", "128", "--"]

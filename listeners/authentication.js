@@ -5,7 +5,7 @@ const crypto = require('crypto');
 const Listener = require('./listener');
 
 const Region = {
-    Uninitialized: 1,
+    Uninitialized: -1,
     Unknown: 0,
     Us: 1,
     Kr: 2,
@@ -16,10 +16,10 @@ const Region = {
     Ptr: 98
 };
 
-module.exports = class AuthenticationListener extends Listener{
+class AuthenticationListener extends Listener {
     constructor(context){
         super('AuthenticationListener', 'proto/bnet/authentication_service.proto');
-        this.clientQueue = context.queueName;
+        this.setClientQueueName(context.queueName);
     }
 
     OnLogonComplete(status, account = undefined, gameAccounts = undefined) {
@@ -41,4 +41,6 @@ module.exports = class AuthenticationListener extends Listener{
             }
         });
     }
-};
+}
+
+module.exports = AuthenticationListener;

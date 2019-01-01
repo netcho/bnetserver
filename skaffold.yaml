@@ -1,0 +1,21 @@
+apiVersion: skaffold/v1alpha5
+kind: Config
+build:
+  tagPolicy:
+    sha256: {}
+  artifacts:
+  - image: netcho/bnetserver
+    docker: {}
+deploy:
+  helm:
+    releases:
+    - name: aurora-development
+      chartPath: ../chart/
+      namespace: default
+      values:
+        image: netcho/bnetserver
+      setValues:
+        rabbitmq.rabbitmq.password: 65sdof6516
+        mysql.hostname: 192.168.1.4
+        mysql.database: battlenet
+        env: development

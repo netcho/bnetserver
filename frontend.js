@@ -4,10 +4,11 @@
 'use strict';
 
 const net = require('net');
-const zookeeper = require('zookeeper-cluster-client');
 const amqplib = require('amqplib');
 const winston = require('winston');
 const models = require('./models');
+const { Etcd3 } = require('etcd3');
+const ConnectionService = require('./services/connection');
 
 const winstonFileTransportConfig = require('./config/winston.json');
 const winstonFileTransport = new winston.transports.File(winstonFileTransportConfig);
@@ -25,32 +26,62 @@ if (process.env.NODE_ENV === 'development') {
 }
 
 winston.emitErrs = true;
+
+global.amqpConnection = null;
+global.netServer = null;
+global.connectionService = new ConnectionService();
 global.logger = new winston.Logger({transports: winstonTransports, exitOnError: false});
+global.etcd3 = new Etcd3({hosts: process.env.ETCD_HOST});
 
-const Connection = require('./connection');
+let amqpUrl = 'amqp://' + process.env.RABBITMQ_USERNAME + ':' + process.env.RABBITMQ_PASSWORD + '@' + process.env.RABBITMQ_SERVICE_NAME;
 
-models.sequelize.sync().then(() => {
-    global.logger.debug('Database synced');
-    return new Promise((resolve, reject) => {
-        global.zookeeper = zookeeper.createClient(process.env.ZOOKEEPER_ADDRESS + ':2181');
-        global.zookeeper.once('connected', () => {
-           resolve();
-        });
-        global.zookeeper.connect();
-    });
-}).then(() => {
-    global.logger.debug('Connected to Zookeeper');
-    return amqplib.connect('amqp://' + process.env.RABBITMQ_USERNAME + ':' + process.env.RABBITMQ_PASSWORD + '@' + process.env.RABBITMQ_SERVICE_NAME);
-}).then((conn) => {
-    global.logger.debug('Connected to RabbitMQ');
+let promises = [];
+
+process.on('unhandledRejection', (error) => {
+    global.logger.error(error);
+    process.exit(1);
+});
+
+process.on('SIGINT', () => {
+    global.connectionService.closeAllConnections();
+
+    if (global.netServer) {
+        global.netServer.close();
+    }
+});
+
+promises.push(amqplib.connect(amqpUrl));
+promises.push(models.sequelize.sync());
+
+Promise.all(promises).then(([conn, db]) => {
     global.amqpConnection = conn;
 
-    net.createServer((socket) => {
-        global.logger.debug('Received a new connection from: ' + socket.remoteAddress);
-        new Connection(socket);
-    }).listen(1119, () => {
+    if (process.env.NODE_ENV === 'development') {
+        const tls = require('tls');
+        const fs = require('fs');
+
+        global.netServer = tls.createServer({
+            key: fs.readFileSync('certs/tls.key'),
+            cert: fs.readFileSync('certs/tls.crt')
+        }, (socket) => {
+            global.connectionService.onNewConnection(socket);
+        });
+    }
+    else {
+        global.netServer = net.createServer((socket) => {
+            global.connectionService.onNewConnection(socket);
+        });
+    }
+
+    global.netServer.listen(1119, () => {
         global.logger.info('Listening on port 1119');
     });
-}).catch((error) => {
-    global.logger.error(error);
+
+    global.netServer.on('close', () => {
+        global.etcd3.close();
+
+        if (global.amqpConnection) {
+            global.amqpConnection.close();
+        }
+    });
 });
