@@ -21,7 +21,7 @@ class Listener {
         this.methods = service.methodsArray;
 
         let hash = new FNV();
-        hash.update(service.getOption('(original_fully_qualified_descriptor_name)'));
+        hash.update(service.getOption('(.bgs.protocol.service_options).descriptor_name'));
         this.hash = parseInt(hash.digest('hex'), 16);
 
         global.amqpConnection.createChannel().
@@ -49,7 +49,7 @@ class Listener {
         let requestBuffer = requestType.encode(request).finish();
         let header = Header.create();
         header.serviceHash = this.hash;
-        header.methodId = method.getOption('(method_id)');
+        header.methodId = method.getOption('(.bgs.protocol.method_options).id');
         header.size = requestBuffer.length;
         header.status = 0;
 
