@@ -4,3 +4,4 @@ node_modules
 certs
 /tls.crt
 /tls.key
+config

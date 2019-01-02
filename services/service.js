@@ -21,7 +21,7 @@ class Service {
         this.methods = service.methodsArray;
 
         let hash = new FNV();
-        hash.update(service.getOption('(original_fully_qualified_descriptor_name)'));
+        hash.update(service.getOption('(.bgs.protocol.service_options).descriptor_name'));
         this.hash = parseInt(hash.digest('hex'), 16);
     }
 
@@ -36,7 +36,7 @@ class Service {
     registerHandler(name, handler) {
         this.methods.forEach((method) => {
             if (method.hasOwnProperty('name') && method.name === name) {
-                this.handlers[method.getOption('(method_id)')] = handler;
+                this.handlers[method.getOption('(.bgs.protocol.method_options).id')] = handler;
             }
         });
     }
@@ -64,7 +64,7 @@ class Service {
     handleCall(context, payload) {
         if (this.handlers[context.header.methodId] !== undefined) {
             let method = this.methods.find((element) => {
-                return element.getOption('(method_id)') === context.header.methodId;
+                return element.getOption('(.bgs.protocol.method_options).id') === context.header.methodId;
             });
 
             let responseType = this.rootNamespace.lookupType(method.responseType);
