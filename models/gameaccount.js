@@ -4,7 +4,7 @@ const FourCC = require(appRoot + '/utils/fourcc');
 const Long = require('long');
 const protobuf = require('protobufjs');
 
-const entityTypes = protobuf.loadSync('proto/bnet/entity_types.proto');
+const entityTypes = protobuf.loadSync('proto/bgs/low/pb/client/entity_types.proto');
 const entityId = entityTypes.lookupType('bgs.protocol.EntityId');
 
 module.exports = (sequelize, DataTypes) => {

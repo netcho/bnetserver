@@ -13,7 +13,7 @@ const models = require(appRoot + '/models/');
 
 class AuthenticationService extends Service {
     constructor() {
-        super('AuthenticationService', 'proto/bnet/authentication_service.proto');
+        super('AuthenticationService', 'proto/bgs/low/pb/client/authentication_service.proto');
 
         this.registerHandler('Logon', this.Logon.bind(this));
 

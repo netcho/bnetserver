@@ -1,8 +1,8 @@
 'use strict';
 const Long = require('long');
-const protobufjs = require('protobufjs');
+const protobuf = require('protobufjs');
 
-const entityTypes = protobufjs.loadSync('proto/bnet/entity_types.proto');
+const entityTypes = protobuf.loadSync('proto/bgs/low/pb/client/entity_types.proto');
 const entityId = entityTypes.lookupType('bgs.protocol.EntityId');
 
 module.exports = (sequelize, DataTypes) => {

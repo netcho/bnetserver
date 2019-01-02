@@ -4,7 +4,7 @@ const protobuf = require('protobufjs');
 
 const Service = require('./service.js');
 
-const gameUtilitiesTypes = protobuf.loadSync('proto/bnet/game_utilities_types.proto');
+const gameUtilitiesTypes = protobuf.loadSync('proto/bgs/low/pb/client/game_utilities_types.proto');
 
 const Attribute = gameUtilitiesTypes.lookupType('.bgs.protocol.Attribute');
 const Variant = gameUtilitiesTypes.lookupType('.bgs.protocol.Variant');
@@ -52,7 +52,7 @@ function bufferToArray(buffer) {
 
 class GameUtilitiesService extends Service {
     constructor() {
-        super('GameUtilitiesService', 'proto/bnet/game_utilities_service.proto');
+        super('GameUtilitiesService', 'proto/bgs/low/pb/client/game_utilities_service.proto');
 
         this.commandHandlers = {};
 

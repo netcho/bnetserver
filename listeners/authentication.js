@@ -18,7 +18,7 @@ const Region = {
 
 class AuthenticationListener extends Listener {
     constructor(context){
-        super('AuthenticationListener', 'proto/bnet/authentication_service.proto');
+        super('AuthenticationListener', 'proto/bgs/low/pb/client/authentication_service.proto');
         this.setClientQueueName(context.queueName);
     }
 

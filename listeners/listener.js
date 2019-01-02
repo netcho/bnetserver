@@ -6,7 +6,7 @@
 const FNV = require('fnv').FNV;
 const protobuf = require('protobufjs');
 
-const Header = protobuf.loadSync('proto/bnet/rpc_types.proto').lookupType('bgs.protocol.Header');
+const Header = protobuf.loadSync('proto/bgs/low/pb/client/rpc_types.proto').lookupType('bgs.protocol.Header');
 
 class Listener {
     constructor(name, file) {

@@ -3,7 +3,7 @@ const protobuf = require('protobufjs');
 
 const Service = require(appRoot + '/services/service');
 
-const accountTypes = protobuf.loadSync('proto/bnet/account_types.proto');
+const accountTypes = protobuf.loadSync('proto/bgs/low/pb/client/account_types.proto');
 
 const AccountState = accountTypes.lookupType('bgs.protocol.account.v1.AccountState');
 const AccountTags = accountTypes.lookupType('bgs.protocol.account.v1.AccountFieldTags');
@@ -17,7 +17,7 @@ const models = require(appRoot + '/models/');
 
 class AccountService extends Service{
     constructor() {
-        super('AccountService', 'proto/bnet/account_service.proto');
+        super('AccountService', 'proto/bgs/low/pb/client/account_service.proto');
 
         this.registerHandler('GetAccountState', this.GetAccountStatus.bind(this));
 

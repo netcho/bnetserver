@@ -4,7 +4,7 @@ const Listener = require('./listener');
 
 class ChallengeListener extends Listener {
     constructor(context) {
-        super('ChallengeListener', 'proto/bnet/challenge_service.proto');
+        super('ChallengeListener', 'proto/bgs/low/pb/client/challenge_service.proto');
         this.setClientQueueName(context.queueName);
     }
 
