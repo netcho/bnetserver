@@ -6,8 +6,8 @@ const Service = require('./service.js');
 
 const gameUtilitiesTypes = protobuf.loadSync('proto/bgs/low/pb/client/game_utilities_types.proto');
 
-const Attribute = gameUtilitiesTypes.lookupType('.bgs.protocol.Attribute');
-const Variant = gameUtilitiesTypes.lookupType('.bgs.protocol.Variant');
+const Attribute = gameUtilitiesTypes.lookupType('bgs.protocol.Attribute');
+const Variant = gameUtilitiesTypes.lookupType('bgs.protocol.Variant');
 
 function GetJSON(variant, name) {
     let string = variant.blobValue.toString();
