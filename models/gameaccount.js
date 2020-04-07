@@ -33,7 +33,8 @@ module.exports = (sequelize, DataTypes) => {
             }
         },
         timestamps: true,
-        underscored: true
+        underscored: true,
+        tableName: 'game_accounts'
     });
 
     GameAccount.associate = (models) => {

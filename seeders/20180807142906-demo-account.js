@@ -12,7 +12,7 @@ module.exports = {
             return queryInterface.sequelize.query('SELECT id FROM accounts', { type: Sequelize.QueryTypes.SELECT });
         }).then((accounts) => {
             let account = accounts[0];
-            return queryInterface.bulkInsert('gameaccounts', [
+            return queryInterface.bulkInsert('game_accounts', [
                 { account_id: account.id, region: 2, program: 'WoW', display_name: 'WoW 1', created_at: new Date(), updated_at: new Date()},
                 { account_id: account.id, region: 2, program: 'WoW', display_name: 'WoW 2', created_at: new Date(), updated_at: new Date()}
             ])
@@ -20,6 +20,6 @@ module.exports = {
     },
 
     down: (queryInterface) => {
-        return queryInterface.bulkDelete('Account', null, {});
+        return queryInterface.bulkDelete('accounts', null, {});
     }
 };

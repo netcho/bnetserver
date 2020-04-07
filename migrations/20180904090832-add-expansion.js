@@ -2,7 +2,7 @@
 
 module.exports = {
   up: (queryInterface, Sequelize) => {
-      return queryInterface.addColumn('GameAccounts', 'expansion', {
+      return queryInterface.addColumn('game_accounts', 'expansion', {
           type: Sequelize.TINYINT,
           allowNull: false,
           defaultValue: 6
@@ -10,6 +10,6 @@ module.exports = {
   },
 
   down: (queryInterface) => {
-    return queryInterface.removeColumn('GameAccounts', 'expansion');
+    return queryInterface.removeColumn('game_accounts', 'expansion');
   }
 };

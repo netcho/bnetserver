@@ -2,12 +2,12 @@
 
 module.exports = {
     up: (queryInterface, Sequelize) => {
-        return queryInterface.addColumn('GameAccounts', 'billing_plan', {
+        return queryInterface.addColumn('game_accounts', 'billing_plan', {
             type: Sequelize.TINYINT.UNSIGNED,
             allowNull: true,
             defaultValue: 0
         }).then(() => {
-            return queryInterface.addColumn('GameAccounts', 'billing_time_remaining', {
+            return queryInterface.addColumn('game_accounts', 'billing_time_remaining', {
                 type: Sequelize.INTEGER.UNSIGNED,
                 allowNull: true,
                 defaultValue: 0
@@ -16,8 +16,8 @@ module.exports = {
     },
 
     down: (queryInterface) => {
-        return queryInterface.removeColumn('GameAccounts', 'billing_plan').then(() => {
-            return queryInterface.removeColumn('GameAccounnts', 'billing_time_remaining');
+        return queryInterface.removeColumn('game_accounts', 'billing_plan').then(() => {
+            return queryInterface.removeColumn('game_accounts', 'billing_time_remaining');
         });
     }
 };

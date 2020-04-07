@@ -2,11 +2,11 @@
 
 module.exports = {
     up: (queryInterface, Sequelize) => {
-        return queryInterface.addColumn('GameAccounts', 'account_id', {
+        return queryInterface.addColumn('game_accounts', 'account_id', {
             type: Sequelize.BIGINT,
             allowNull: false
         }).then(() => {
-            return queryInterface.addConstraint('GameAccounts', ['account_id'], {
+            return queryInterface.addConstraint('game_accounts', ['account_id'], {
                 type: 'foreign key',
                 name: 'account_key',
                 references: {
@@ -20,6 +20,6 @@ module.exports = {
     },
 
     down: (queryInterface) => {
-        return queryInterface.removeColumn('GameAccounts', 'account_id');
+        return queryInterface.removeColumn('game_accounts', 'account_id');
     }
 };
