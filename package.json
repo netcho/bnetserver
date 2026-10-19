@@ -24,7 +24,7 @@
     "microtime": "^2.1.9",
     "morgan": "^1.10.0",
     "mysql": "^2.18.1",
-    "mysql2": "^1.7.0",
+    "mysql2": "^3.23.1",
     "protobufjs": "^6.10.3",
     "querystring": "^0.2.0",
     "sequelize": "^6.3.5",
